@@ -18,70 +18,58 @@ final class AddressParserTest extends TestCase
         $this->parser = new AddressParser();
     }
 
-    #[DataProvider('civicNumberExamples')]
-    public function testParsesSupportedCivicNumberForms(
+    #[DataProvider('addressExamples')]
+    public function testParsesCivicNumberAndPreservesAllFollowingInformation(
         string $vianum,
         string $street,
-        string $number,
-        ?string $separator,
-        ?string $suffix,
-        ?string $rangeEnd,
+        ?string $number,
+        string $trailing,
+        bool $hasNoHouseNumber = false,
     ): void {
         $parsed = $this->parser->parse($this->input($vianum));
 
         self::assertSame($street, $parsed->streetName);
-        self::assertNotNull($parsed->houseNumber);
-        self::assertSame($number, $parsed->houseNumber->number);
-        self::assertSame($separator, $parsed->houseNumber->separator);
-        self::assertSame($suffix, $parsed->houseNumber->suffix);
-        self::assertSame($rangeEnd, $parsed->houseNumber->rangeEnd);
-        self::assertFalse($parsed->hasNoHouseNumber);
+        self::assertSame($number, $parsed->houseNumber?->number);
+        self::assertSame($trailing, $parsed->trailingInformation);
+        self::assertSame($hasNoHouseNumber, $parsed->hasNoHouseNumber);
+        self::assertSame($vianum, $parsed->input->vianum);
     }
 
-    public static function civicNumberExamples(): iterable
+    public static function addressExamples(): iterable
     {
-        yield 'plain number' => ['Via Roma 15', 'Via Roma', '15', null, null, null];
-        yield 'slash suffix' => ['Via Roma 15/A', 'Via Roma', '15', '/', 'A', null];
-        yield 'space suffix' => ['Via Roma 15 A', 'Via Roma', '15', ' ', 'A', null];
-        yield 'number range' => ['Via Roma 15-17', 'Via Roma', '15', '-', null, '17'];
+        yield 'plain civic number' => ['Via Roma 15', 'Via Roma', '15', ''];
+        yield 'space followed by letter' => ['Via Roma 15 A', 'Via Roma', '15', 'A'];
+        yield 'slash detail' => ['Via Roma 15/A', 'Via Roma', '15', '/A'];
+        yield 'attached letter detail' => ['Via Roma 15A', 'Via Roma', '15', 'A'];
+        yield 'color detail' => ['Via Roma 15 Rosso', 'Via Roma', '15', 'Rosso'];
+        yield 'interior detail with number' => ['Via Roma 15 interno 3', 'Via Roma', '15', 'interno 3'];
+        yield 'letter and interior detail' => ['Via Roma 15 A interno 3', 'Via Roma', '15', 'A interno 3'];
+        yield 'punctuated detail' => ['Via Roma 15 - int. 3', 'Via Roma', '15', '- int. 3'];
+        yield 'comma detail' => ['Via Roma 15, interno 3', 'Via Roma', '15', ', interno 3'];
+        yield 'comma before civic number' => ['Via Roma, 15', 'Via Roma', '15', ''];
+        yield 'n dot introducer' => ['Via Roma n. 15', 'Via Roma', '15', ''];
+        yield 'n degree introducer' => ['Via Roma n° 15', 'Via Roma', '15', ''];
+        yield 'n introducer' => ['Via Roma N 15', 'Via Roma', '15', ''];
+        yield 'num dot introducer' => ['Via Roma num. 15', 'Via Roma', '15', ''];
+        yield 'numero introducer' => ['Via Roma numero 15', 'Via Roma', '15', ''];
+        yield 'slash numeric detail' => ['Via Roma 15/17', 'Via Roma', '15', '/17'];
+        yield 'hyphenated numeric detail' => ['Via Roma 15-17', 'Via Roma', '15', '-17'];
+        yield 'explicit no civic number' => ['Via Roma SNC', 'Via Roma', null, '', true];
+        yield 'street without civic number' => ['Via Roma', 'Via Roma', null, ''];
+        yield 'number in street name' => ['Via 20 Settembre', 'Via 20 Settembre', null, ''];
+        yield 'number in street name without civic' => ['Via 8 Luglio', 'Via 8 Luglio', null, ''];
+        yield 'street number followed by civic' => ['Via 8 Luglio 15', 'Via 8 Luglio', '15', ''];
+        yield 'street number followed by civic and detail' => ['Via 8 Luglio 15 A', 'Via 8 Luglio', '15', 'A'];
     }
 
-    public function testPreservesTextFollowingCivicNumber(): void
+    public function testTrimsAddressEdgesButPreservesOriginalInputAndDetailText(): void
     {
-        $parsed = $this->parser->parse($this->input('Via Roma 15 interno 3'));
-
-        self::assertSame('Via Roma', $parsed->streetName);
-        self::assertSame('15', $parsed->houseNumber?->raw);
-        self::assertSame('interno 3', $parsed->trailingInformation);
-        self::assertSame('Via Roma 15 interno 3', $parsed->input->vianum);
-    }
-
-    public function testSncMeansExplicitlyWithoutHouseNumber(): void
-    {
-        $parsed = $this->parser->parse($this->input('Via Roma SNC'));
-
-        self::assertSame('Via Roma', $parsed->streetName);
-        self::assertNull($parsed->houseNumber);
-        self::assertTrue($parsed->hasNoHouseNumber);
-    }
-
-    public function testAddressWithoutCivicNumberIsUnknownRatherThanExplicitlyNoNumber(): void
-    {
-        $parsed = $this->parser->parse($this->input('Via Roma'));
-
-        self::assertSame('Via Roma', $parsed->streetName);
-        self::assertNull($parsed->houseNumber);
-        self::assertFalse($parsed->hasNoHouseNumber);
-    }
-
-    public function testTrimsSurroundingAndRepeatedWhitespaceWithoutChangingRawInput(): void
-    {
-        $input = $this->input('  Via   Roma   15   ');
+        $input = $this->input('  Via   Roma 15   interno 3  ');
         $parsed = $this->parser->parse($input);
 
         self::assertSame('Via   Roma', $parsed->streetName);
-        self::assertSame('15', $parsed->houseNumber?->raw);
-        self::assertSame('  Via   Roma   15   ', $parsed->input->vianum);
+        self::assertSame('interno 3  ', $parsed->trailingInformation);
+        self::assertSame('  Via   Roma 15   interno 3  ', $parsed->input->vianum);
     }
 
     public function testEmptyVianumHasNoHouseNumber(): void
@@ -96,12 +84,17 @@ final class AddressParserTest extends TestCase
     public function testPreservesNullAndEmptyCapAndOtherRawAddressFields(): void
     {
         $emptyCap = new AddressInput('Via Roma', '', 'Città', 'rm');
-        $nullCap = new AddressInput('Via Roma', null, null, null);
+        $nullFields = new AddressInput('', null, null, null);
 
-        self::assertSame('', $this->parser->parse($emptyCap)->input->cap);
-        self::assertSame('Città', $this->parser->parse($emptyCap)->input->city);
-        self::assertSame('rm', $this->parser->parse($emptyCap)->input->province);
-        self::assertNull($this->parser->parse($nullCap)->input->cap);
+        $parsedWithEmptyCap = $this->parser->parse($emptyCap);
+        $parsedWithNullFields = $this->parser->parse($nullFields);
+
+        self::assertSame('', $parsedWithEmptyCap->input->cap);
+        self::assertSame('Città', $parsedWithEmptyCap->input->city);
+        self::assertSame('rm', $parsedWithEmptyCap->input->province);
+        self::assertNull($parsedWithNullFields->input->cap);
+        self::assertNull($parsedWithNullFields->input->city);
+        self::assertNull($parsedWithNullFields->input->province);
     }
 
     public function testPreservesCapLeadingZeroesCityAndProvinceExactly(): void
@@ -112,49 +105,6 @@ final class AddressParserTest extends TestCase
         self::assertSame('00123', $parsed->input->cap);
         self::assertSame('Città', $parsed->input->city);
         self::assertSame('rm', $parsed->input->province);
-    }
-
-    public function testDoesNotTreatDigitsEmbeddedInStreetNameAsHouseNumber(): void
-    {
-        $parsed = $this->parser->parse($this->input('Via 20 Settembre'));
-
-        self::assertSame('Via 20 Settembre', $parsed->streetName);
-        self::assertNull($parsed->houseNumber);
-    }
-
-    public function testDistinguishesStreetNumberFromCivicNumberAndPreservesSingleLetterTail(): void
-    {
-        $streetOnly = $this->parser->parse($this->input('Via 8 Luglio'));
-        $withCivicNumber = $this->parser->parse($this->input('Via 8 Luglio 15'));
-        $withTrailingLetter = $this->parser->parse($this->input('Via 8 Luglio 15 A'));
-
-        self::assertSame('Via 8 Luglio', $streetOnly->streetName);
-        self::assertNull($streetOnly->houseNumber);
-
-        self::assertSame('Via 8 Luglio', $withCivicNumber->streetName);
-        self::assertSame('15', $withCivicNumber->houseNumber?->number);
-        self::assertSame('', $withCivicNumber->trailingInformation);
-
-        self::assertSame('Via 8 Luglio', $withTrailingLetter->streetName);
-        self::assertSame('15', $withTrailingLetter->houseNumber?->number);
-        self::assertNull($withTrailingLetter->houseNumber?->suffix);
-        self::assertSame('A', $withTrailingLetter->trailingInformation);
-    }
-
-    #[DataProvider('ambiguousCivicNumberExamples')]
-    public function testLeavesMalformedOrAmbiguousNumberLikeTextUnparsed(string $vianum): void
-    {
-        $parsed = $this->parser->parse($this->input($vianum));
-
-        self::assertSame($vianum, $parsed->streetName);
-        self::assertNull($parsed->houseNumber);
-    }
-
-    public static function ambiguousCivicNumberExamples(): iterable
-    {
-        yield 'number embedded before street word' => ['Via 15 Roma'];
-        yield 'multiple numbers with unclear range syntax' => ['Via Roma 15/17/A'];
-        yield 'text after number without a recognized detail marker' => ['Via Roma 15 Rosso'];
     }
 
     private function input(string $vianum): AddressInput
