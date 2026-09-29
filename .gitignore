@@ -2,4 +2,7 @@
 /.phpunit.cache/
 /.phpunit.result.cache
 /coverage/
+/archi_cap.dbf
+/var/*.sqlite
+/var/*.sqlite-*
 .DS_Store

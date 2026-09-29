@@ -1,0 +1,21 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Normalizzatore\Directory\SqliteDirectoryImporter;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+if ($argc !== 3) {
+    fwrite(STDERR, "Usage: php bin/import-directory <source.dbf> <destination.sqlite>\n");
+    exit(2);
+}
+
+try {
+    $count = (new SqliteDirectoryImporter())->import($argv[1], $argv[2]);
+    fwrite(STDOUT, sprintf("Imported %d records into %s\n", $count, $argv[2]));
+} catch (Throwable $exception) {
+    fwrite(STDERR, 'Import failed: ' . $exception->getMessage() . "\n");
+    exit(1);
+}
