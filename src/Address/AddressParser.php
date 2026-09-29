@@ -13,19 +13,33 @@ final class AddressParser
 
     public function parse(AddressInput $input): ParsedAddress
     {
-        $address = ltrim($this->syntaxNormalizer->normalize($input->vianum));
+        $normalized = $this->syntaxNormalizer->normalize($input->vianum);
+        $address = ltrim($normalized);
 
         if (preg_match('/(?:^|\\s)SNC\\s*$/iu', $address, $sncMatch) === 1) {
             $street = trim(substr($address, 0, -strlen($sncMatch[0])));
 
-            return new ParsedAddress($input, $street, null, '', true);
+            return new ParsedAddress(
+                $input,
+                $normalized,
+                [new AddressCandidate($street, null, '')],
+                true,
+            );
         }
 
-        preg_match_all('/\\d+/u', $address, $numberMatches, PREG_OFFSET_CAPTURE);
+        /** @var array<string, AddressCandidate> $candidates */
+        $candidates = [];
 
-        foreach ($numberMatches[0] as [$number, $offset]) {
+        $completeStreet = trim($address);
+        if ($completeStreet !== '') {
+            $this->addCandidate($candidates, new AddressCandidate($completeStreet, null, ''));
+        }
+
+        preg_match_all('/(?<!\\S)(\\d+)/u', $address, $numberMatches, PREG_OFFSET_CAPTURE);
+
+        foreach ($numberMatches[1] as [$number, $offset]) {
             $street = trim(substr($address, 0, $offset));
-            if ($this->containsStreetName($street) === false) {
+            if ($street === '') {
                 continue;
             }
 
@@ -33,24 +47,26 @@ final class AddressParser
             $trailingInformation = substr($address, $tailOffset);
             $trailingInformation = preg_replace('/^\\s+/u', '', $trailingInformation) ?? $trailingInformation;
 
-            return new ParsedAddress(
-                $input,
-                $street,
-                new HouseNumber($number),
-                $trailingInformation,
-                false,
+            $this->addCandidate(
+                $candidates,
+                new AddressCandidate($street, new HouseNumber($number), $trailingInformation),
             );
         }
 
-        return new ParsedAddress($input, trim($address), null, '', false);
+        return new ParsedAddress($input, $normalized, array_values($candidates), false);
     }
 
-    private function containsStreetName(string $street): bool
+    /**
+     * @param array<string, AddressCandidate> $candidates
+     */
+    private function addCandidate(array &$candidates, AddressCandidate $candidate): void
     {
-        preg_match_all('/[\\p{L}\\p{M}]+/u', $street, $words);
+        $key = serialize([
+            $candidate->streetName,
+            $candidate->houseNumber?->number,
+            $candidate->trailingInformation,
+        ]);
 
-        // Requiring two words avoids treating numbers in names such as
-        // "Via 8 Luglio" or "Via 20 Settembre" as a civic number.
-        return count($words[0]) >= 2;
+        $candidates[$key] = $candidate;
     }
 }
