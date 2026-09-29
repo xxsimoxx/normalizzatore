@@ -11,7 +11,11 @@ use Throwable;
 
 final class SqliteDirectoryImporter
 {
-    public const SCHEMA_VERSION = '1';
+    public const SCHEMA_VERSION = '2';
+
+    public function __construct(private readonly DirectoryKeyNormalizer $keyNormalizer = new DirectoryKeyNormalizer())
+    {
+    }
 
     public function import(string $dbfPath, string $sqlitePath): int
     {
@@ -48,8 +52,8 @@ final class SqliteDirectoryImporter
 
             $insert = $pdo->prepare(
                 'INSERT INTO directory_entries '
-                . '(vianum, cap, citta, pr, pari_dispa, civico_da, civico_a) '
-                . 'VALUES (:vianum, :cap, :citta, :pr, :pari_dispa, :civico_da, :civico_a)',
+                . '(vianum, cap, citta, pr, pari_dispa, civico_da, civico_a, vianum_key, citta_key, pr_key) '
+                . 'VALUES (:vianum, :cap, :citta, :pr, :pari_dispa, :civico_da, :civico_a, :vianum_key, :citta_key, :pr_key)',
             );
             $pdo->beginTransaction();
             $count = 0;
@@ -62,12 +66,15 @@ final class SqliteDirectoryImporter
                     ':pari_dispa' => $record->pariDispa,
                     ':civico_da' => $record->civicoDa,
                     ':civico_a' => $record->civicoA,
+                    ':vianum_key' => $this->keyNormalizer->normalize($record->vianum),
+                    ':citta_key' => $this->keyNormalizer->normalize($record->citta),
+                    ':pr_key' => $this->keyNormalizer->normalize($record->pr),
                 ]);
                 $count++;
             }
             $pdo->commit();
 
-            $pdo->exec('CREATE INDEX idx_directory_entries_lookup ON directory_entries (vianum, citta, pr)');
+            $pdo->exec('CREATE INDEX idx_directory_entries_lookup_key ON directory_entries (vianum_key, citta_key, pr_key)');
             $metadata = $pdo->prepare('INSERT INTO directory_metadata (key, value) VALUES (:key, :value)');
             $values = [
                 'schema_version' => self::SCHEMA_VERSION,
@@ -117,7 +124,10 @@ final class SqliteDirectoryImporter
                 pr TEXT NOT NULL,
                 pari_dispa TEXT NOT NULL,
                 civico_da TEXT NOT NULL,
-                civico_a TEXT NOT NULL
+                civico_a TEXT NOT NULL,
+                vianum_key TEXT NOT NULL,
+                citta_key TEXT NOT NULL,
+                pr_key TEXT NOT NULL
             )
             SQL);
         $pdo->exec(<<<'SQL'

@@ -11,8 +11,9 @@ The CSV delimiter will be configurable, and the reader/writer will remain indepe
 - PHP 8.2 or later
 - Composer
 - `pdo_sqlite` PHP extension to build the local directory database
+- `mbstring` PHP extension for Unicode-aware directory keys
 
-PHPUnit 11 is used for development and testing. There are no Composer runtime packages; the directory importer uses PHP's `iconv` and `pdo_sqlite` extensions.
+PHPUnit 11 is used for development and testing. There are no Composer runtime packages; the importer and lookup keys use PHP's `iconv`, `pdo_sqlite`, and `mbstring` extensions.
 
 ## Setup and tests
 
@@ -29,6 +30,6 @@ The CLI entry point is `bin/normalizzatore`. A local SQLite copy of the street d
 php bin/import-directory archi_cap.dbf var/archi_cap.sqlite
 ```
 
-The importer streams the DBF into SQLite. The source DBF and generated local SQLite databases are data files and are not part of the repository.
+The importer streams the DBF into SQLite and stores conservative internal lookup keys made by trimming, collapsing whitespace, and Unicode uppercasing. It preserves punctuation and accents. The source DBF and generated local SQLite databases are data files and are not part of the repository.
 
 The importer decodes DBF text as CP850, consistent with the file's Language Driver ID `0x02` and the Italian characters verified in its records. Since the file identifies as dBASE III (`0x03`), that byte is not necessarily a normative encoding declaration for every reader. Some source values contain apparently anomalous sequences; the importer preserves them after decoding and applies no heuristic corrections.
