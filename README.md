@@ -34,4 +34,8 @@ The importer streams the DBF into SQLite and stores conservative internal lookup
 
 Directory lookup and CAP resolution are separate steps: lookup returns all entries for an exact normalized street/city/province key, then a pure resolver evaluates numeric inclusive civic ranges using the supported parity codes T (all civics), P (even civics), and D (odd civics). Only five-digit CAPs are returned as normalized CAPs. Results distinguish RESOLVED, NO_MATCH, AMBIGUOUS, and INDETERMINATE; unsupported directory data is preserved and can prevent a confident result. This stage does not use aliases or fuzzy matching.
 
+## Città capizzate
+
+The catalog in `resources/capizzated-cities.tsv` contains the 42 capizzated cities. Membership depends only on the city name, compared after trimming, collapsing whitespace, and Unicode uppercasing; punctuation and accents are preserved. The province in the source list is metadata only. MESTRE and VENEZIA remain separate entries. The catalog does not yet orchestrate address or CAP resolution.
+
 The importer decodes DBF text as CP850, consistent with the file's Language Driver ID `0x02` and the Italian characters verified in its records. Since the file identifies as dBASE III (`0x03`), that byte is not necessarily a normative encoding declaration for every reader. Some source values contain apparently anomalous sequences; the importer preserves them after decoding and applies no heuristic corrections.
