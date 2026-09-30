@@ -13,6 +13,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface
 {
     private PDO $pdo;
     private PDOStatement $lookup;
+    private ?PDOStatement $territorialLookup = null;
 
     public function __construct(
         string $sqlitePath,
@@ -23,11 +24,11 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface
         }
 
         try {
-            $this->pdo = new PDO('sqlite:' . $sqlitePath, options: [
+            $this->pdo = new PDO($this->readOnlyDsn($sqlitePath), options: [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ]);
-            $this->pdo->exec('PRAGMA query_only = ON');
+            $this->pdo->exec('PRAGMA temp_store = MEMORY');
             $this->assertCompatibleSchema();
             $this->lookup = $this->pdo->prepare(<<<'SQL'
                 SELECT id, vianum, cap, citta, pr, pari_dispa, civico_da, civico_a
@@ -35,6 +36,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface
                 WHERE vianum_key = :vianum_key AND citta_key = :citta_key AND pr_key = :pr_key
                 ORDER BY id ASC
                 SQL);
+            $this->pdo->exec('PRAGMA query_only = ON');
         } catch (PDOException $exception) {
             throw new DirectorySchemaException('Unable to open or query the SQLite directory: ' . $exception->getMessage(), 0, $exception);
         }
@@ -64,6 +66,85 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface
         }
 
         return $entries;
+    }
+
+    /** @return list<TerritorialEntry> */
+    public function findTerritorialEntries(string $city): array
+    {
+        $this->prepareTerritorialIndex();
+
+        if ($this->territorialLookup === null) {
+            throw new DirectorySchemaException('Unable to prepare the temporary territorial directory index.');
+        }
+
+        $this->territorialLookup->execute([
+            ':citta_key' => $this->keyNormalizer->normalize($city),
+        ]);
+
+        $entries = [];
+        foreach ($this->territorialLookup->fetchAll() as $row) {
+            $entries[] = new TerritorialEntry(
+                $row['citta'],
+                $row['pr'],
+                $row['cap'],
+                (int) $row['record_count'],
+            );
+        }
+
+        return $entries;
+    }
+
+    private function prepareTerritorialIndex(): void
+    {
+        if ($this->territorialLookup !== null) {
+            return;
+        }
+
+        try {
+            // The main database is opened mode=ro; only this connection-local TEMP table is written.
+            $this->pdo->exec('PRAGMA query_only = OFF');
+            $this->pdo->beginTransaction();
+            $this->pdo->exec(<<<'SQL'
+                CREATE TEMP TABLE territorial_directory_entries AS
+                SELECT citta_key, citta, pr, cap, COUNT(*) AS record_count
+                FROM directory_entries
+                GROUP BY citta_key, citta, pr, cap
+                SQL);
+            $this->pdo->exec('CREATE INDEX temp.idx_territorial_directory_city_key ON territorial_directory_entries (citta_key)');
+            $lookup = $this->pdo->prepare(<<<'SQL'
+                SELECT citta, pr, cap, record_count
+                FROM territorial_directory_entries
+                WHERE citta_key = :citta_key
+                ORDER BY citta, pr, cap
+                SQL);
+            $this->pdo->commit();
+        } catch (PDOException $exception) {
+            if ($this->pdo->inTransaction()) {
+                try {
+                    $this->pdo->rollBack();
+                } catch (PDOException) {
+                    // Keep the original preparation error.
+                }
+            }
+            try {
+                $this->pdo->exec('DROP TABLE IF EXISTS temp.territorial_directory_entries');
+            } catch (PDOException) {
+                // Keep the original preparation error.
+            }
+
+            throw new DirectorySchemaException('Unable to build the temporary territorial lookup index.', 0, $exception);
+        } finally {
+            $this->pdo->exec('PRAGMA query_only = ON');
+        }
+
+        $this->territorialLookup = $lookup;
+    }
+
+    private function readOnlyDsn(string $sqlitePath): string
+    {
+        $uriPath = str_replace('%2F', '/', rawurlencode($sqlitePath));
+
+        return 'sqlite:file:' . $uriPath . '?mode=ro';
     }
 
     private function assertCompatibleSchema(): void
