@@ -36,6 +36,6 @@ Directory lookup and CAP resolution are separate steps: lookup returns all entri
 
 ## Città capizzate
 
-The catalog in `resources/capizzated-cities.tsv` contains the 42 capizzated cities. Membership depends only on the city name, compared after trimming, collapsing whitespace, and Unicode uppercasing; punctuation and accents are preserved. The province in the source list is metadata only. MESTRE and VENEZIA remain separate entries. The catalog does not yet orchestrate address or CAP resolution.
+The catalog in `resources/capizzated-cities.tsv` contains the 42 capizzated cities. Membership depends only on the city name, compared after trimming, collapsing whitespace, and Unicode uppercasing; punctuation and accents are preserved. The province in the source list is metadata only. MESTRE and VENEZIA remain separate entries. `AddressStrategyClassifier` now classifies an input for a future street-based or territorial strategy; this classification does not resolve a CAP or execute either strategy.
 
 The importer decodes DBF text as CP850, consistent with the file's Language Driver ID `0x02` and the Italian characters verified in its records. Since the file identifies as dBASE III (`0x03`), that byte is not necessarily a normative encoding declaration for every reader. Some source values contain apparently anomalous sequences; the importer preserves them after decoding and applies no heuristic corrections.
