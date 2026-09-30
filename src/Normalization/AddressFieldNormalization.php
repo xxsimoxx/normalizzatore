@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Normalizzatore\Normalization;
 
 use Normalizzatore\Resolution\AddressResolution;
+use Normalizzatore\Address\AddressSyntaxPreference;
+use Normalizzatore\Address\ParsedAddress;
 
 /** Field outcomes plus references to the original source and resolution evidence. */
 final readonly class AddressFieldNormalization
@@ -17,6 +19,8 @@ final readonly class AddressFieldNormalization
         public NormalizedField $civicDetails,
         public NormalizedField $city,
         public NormalizedField $province,
+        public ?AddressSyntaxPreference $syntaxPreference = null,
+        public ?ParsedAddress $parsedAddress = null,
     ) {
         foreach ([
             [$street, NormalizedFieldName::STREET],

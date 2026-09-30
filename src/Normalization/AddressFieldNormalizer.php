@@ -8,6 +8,8 @@ use Normalizzatore\Address\AddressCandidate;
 use Normalizzatore\Address\AddressInput;
 use Normalizzatore\Address\AddressParser;
 use Normalizzatore\Address\AddressResolutionStrategy;
+use Normalizzatore\Address\AddressSyntaxPreference;
+use Normalizzatore\Address\AddressSyntaxPreferenceEvaluator;
 use Normalizzatore\Directory\DirectoryEntry;
 use Normalizzatore\Directory\DirectoryKeyNormalizer;
 use Normalizzatore\Directory\TerritorialEntry;
@@ -20,6 +22,7 @@ final readonly class AddressFieldNormalizer
     public function __construct(
         private AddressParser $addressParser = new AddressParser(),
         private DirectoryKeyNormalizer $directoryKeyNormalizer = new DirectoryKeyNormalizer(),
+        private AddressSyntaxPreferenceEvaluator $preferenceEvaluator = new AddressSyntaxPreferenceEvaluator(),
     ) {
     }
 
@@ -27,6 +30,8 @@ final readonly class AddressFieldNormalizer
     {
         /** @var list<array{candidate: AddressCandidate, entries: list<DirectoryEntry>}> $interpretations */
         $interpretations = [];
+        $syntaxPreference = null;
+        $parsedAddress = null;
         if ($resolution->strategy === AddressResolutionStrategy::STREET_BASED) {
             foreach ($resolution->streetCandidateResolutions as $candidateResolution) {
                 $interpretations[] = [
@@ -34,10 +39,16 @@ final readonly class AddressFieldNormalizer
                     'entries' => $candidateResolution->directoryEntries,
                 ];
             }
+            $syntaxPreference = $this->preferenceEvaluator->evaluate(
+                $input->vianum,
+                array_map(static fn (array $item): AddressCandidate => $item['candidate'], $interpretations),
+            );
         } else {
             // The territorial orchestrator intentionally does not parse streets. Parse here once
             // to expose syntax only; no directory lookup or CAP evidence is inferred from it.
-            foreach ($this->addressParser->parse($input)->candidates as $candidate) {
+            $parsedAddress = $this->addressParser->parse($input);
+            $syntaxPreference = $parsedAddress->syntaxPreference;
+            foreach ($parsedAddress->candidates as $candidate) {
                 $interpretations[] = ['candidate' => $candidate, 'entries' => []];
             }
         }
@@ -53,7 +64,18 @@ final readonly class AddressFieldNormalizer
                 $supported[] = ['candidate' => $item['candidate'], 'entries' => $relevantEntries];
             }
         }
-        $relevant = $supported !== [] ? $supported : $interpretations;
+        if ($supported !== []) {
+            // Directory evidence remains authoritative for field values, independently of
+            // the syntax preference. The preference remains available as separate evidence.
+            $relevant = $supported;
+        } elseif ($syntaxPreference?->preferredCandidate !== null) {
+            $relevant = array_values(array_filter(
+                $interpretations,
+                static fn (array $item): bool => $item['candidate'] === $syntaxPreference->preferredCandidate,
+            ));
+        } else {
+            $relevant = $interpretations;
+        }
         $directoryEntries = [];
         foreach ($supported as $item) {
             array_push($directoryEntries, ...$item['entries']);
@@ -108,7 +130,17 @@ final readonly class AddressFieldNormalizer
             true,
         );
 
-        return new AddressFieldNormalization($input->vianum, $resolution, $street, $number, $details, $city, $province);
+        return new AddressFieldNormalization(
+            $input->vianum,
+            $resolution,
+            $street,
+            $number,
+            $details,
+            $city,
+            $province,
+            $syntaxPreference,
+            $parsedAddress,
+        );
     }
 
     /**

@@ -15,6 +15,7 @@ final readonly class ParsedAddress
         public array $candidates,
         /** True only when SNC explicitly states that there is no civic number. */
         public bool $hasNoHouseNumber,
+        public ?AddressSyntaxPreference $syntaxPreference = null,
     ) {
     }
 }

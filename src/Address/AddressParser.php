@@ -8,6 +8,7 @@ final class AddressParser
 {
     public function __construct(
         private readonly AddressSyntaxNormalizer $syntaxNormalizer = new AddressSyntaxNormalizer(),
+        private readonly AddressSyntaxPreferenceEvaluator $preferenceEvaluator = new AddressSyntaxPreferenceEvaluator(),
     ) {
     }
 
@@ -18,12 +19,15 @@ final class AddressParser
 
         if (preg_match('/(?:^|\\s)SNC\\s*$/iu', $address, $sncMatch) === 1) {
             $street = trim(substr($address, 0, -strlen($sncMatch[0])));
+            $candidate = new AddressCandidate($street, null, '');
+            $candidates = [$candidate];
 
             return new ParsedAddress(
                 $input,
                 $normalized,
-                [new AddressCandidate($street, null, '')],
+                $candidates,
                 true,
+                $this->preferenceEvaluator->evaluate($input->vianum, $candidates),
             );
         }
 
@@ -53,7 +57,15 @@ final class AddressParser
             );
         }
 
-        return new ParsedAddress($input, $normalized, array_values($candidates), false);
+        $candidateList = array_values($candidates);
+
+        return new ParsedAddress(
+            $input,
+            $normalized,
+            $candidateList,
+            false,
+            $this->preferenceEvaluator->evaluate($input->vianum, $candidateList),
+        );
     }
 
     /**
