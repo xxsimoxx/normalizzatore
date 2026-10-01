@@ -5,20 +5,37 @@ declare(strict_types=1);
 namespace Normalizzatore\Directory;
 
 use InvalidArgumentException;
+use Normalizzatore\Text\OrthographyNormalizer;
 
 /**
- * Creates conservative lookup keys. Whitespace is Unicode separator characters,
- * ASCII tab through carriage return, and Unicode NEXT LINE (U+0085).
+ * Creates lookup keys using explicit orthographic equivalences and conservative
+ * whitespace normalization (Unicode separators, ASCII tab through carriage return,
+ * and Unicode NEXT LINE U+0085).
  */
 final readonly class DirectoryKeyNormalizer
 {
+    public function __construct(private OrthographyNormalizer $orthographyNormalizer = new OrthographyNormalizer())
+    {
+    }
+
     public function normalize(string $value): string
     {
-        $collapsed = preg_replace('/[\p{Z}\x09-\x0D\x{0085}]+/u', ' ', $value);
-        if ($collapsed === null) {
+        try {
+            return $this->orthographyNormalizer->normalize($value);
+        } catch (InvalidArgumentException) {
             throw new InvalidArgumentException('Directory key contains invalid UTF-8.');
         }
+    }
 
-        return mb_strtoupper(trim($collapsed), 'UTF-8');
+    /** @return array<string, string> */
+    public function orthographicReplacements(): array
+    {
+        return $this->orthographyNormalizer->orthographicReplacements();
+    }
+
+    /** @return list<string> */
+    public function orthographicTriggerCharacters(): array
+    {
+        return $this->orthographyNormalizer->orthographicTriggerCharacters();
     }
 }

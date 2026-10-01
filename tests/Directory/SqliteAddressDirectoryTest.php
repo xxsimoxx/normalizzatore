@@ -36,6 +36,14 @@ final class SqliteAddressDirectoryTest extends TestCase
             SqliteDirectoryFixture::row('VIA TERRITORIALE 2', '00100', 'ROMA', 'RM', 'T', '', ''),
             SqliteDirectoryFixture::row('VIA TERRITORIALE 3', 'X', '  roma  ', 'XX', 'T', '', ''),
             SqliteDirectoryFixture::row('VIA TERRITORIALE 4', '', 'Roma', 'YY', 'T', '', ''),
+            SqliteDirectoryFixture::row("VIA D'ANNUNZIO", '00123', 'Torpè', 'NU', 'T', '', ''),
+            SqliteDirectoryFixture::row('VIA D`ANNUNZIO', '00124', 'Torpè', 'NU', 'T', '', ''),
+            SqliteDirectoryFixture::row('VIA TERRITORIALE LODE', '08020', 'Lodè', 'NU', 'T', '', ''),
+            SqliteDirectoryFixture::row('VIA TERRITORIALE ALA', '07020', 'Alà dei Sardi', 'SS', 'T', '', ''),
+            SqliteDirectoryFixture::row("PIAZZA MONDOVI'", '89816', 'CESSANITI', 'VV', 'T', '', ''),
+            SqliteDirectoryFixture::row('PIAZZA MONDOVI`', '89816', 'CESSANITI', 'VV', 'T', '', ''),
+            SqliteDirectoryFixture::row("VICOLO DELL'OSPEDALE", '53049', 'TORRITA DI SIENA', 'SI', 'T', '', ''),
+            SqliteDirectoryFixture::row('VICOLO DELL`OSPEDALE', '53049', 'TORRITA DI SIENA', 'SI', 'T', '', ''),
         ]);
     }
 
@@ -71,6 +79,33 @@ final class SqliteAddressDirectoryTest extends TestCase
     public function testReturnsAnEmptyListForAnUnmatchedStreet(): void
     {
         self::assertSame([], (new SqliteAddressDirectory($this->database))->findByStreetCityProvince('VIA ASSENTE', 'ROMA', 'RM'));
+    }
+
+    public function testCanonicalStreetLookupPreservesAllOrthographicEvidenceRows(): void
+    {
+        $directory = new SqliteAddressDirectory($this->database);
+        $entries = $directory->findByStreetCityProvince('Via D’Annunzio', "TORPE'", 'nu');
+
+        self::assertSame(["VIA D'ANNUNZIO", 'VIA D`ANNUNZIO'], array_map(
+            static fn (DirectoryEntry $entry): string => $entry->vianum,
+            $entries,
+        ));
+
+        self::assertCount(2, $directory->findByStreetCityProvince("PIAZZA MONDOVI'", 'CESSANITI', 'VV'));
+        self::assertCount(2, $directory->findByStreetCityProvince("VICOLO DELL'OSPEDALE", 'TORRITA DI SIENA', 'SI'));
+    }
+
+    public function testCanonicalTerritorialLookupFindsAccentEquivalentCityAndPreservesSpellings(): void
+    {
+        $entries = (new SqliteAddressDirectory($this->database))->findTerritorialEntries("TORPE'");
+
+        self::assertSame([['Torpè', 'NU', '00123', 1], ['Torpè', 'NU', '00124', 1]], array_map(
+            static fn ($entry): array => [$entry->city, $entry->province, $entry->cap, $entry->recordCount],
+            $entries,
+        ));
+        $directory = new SqliteAddressDirectory($this->database);
+        self::assertSame('08020', $directory->findTerritorialEntries("LODE'")[0]->cap);
+        self::assertSame('07020', $directory->findTerritorialEntries("ALA' DEI SARDI")[0]->cap);
     }
 
     public function testDoesNotExpandAbbreviationsOrRemoveQualifiers(): void
@@ -123,6 +158,91 @@ final class SqliteAddressDirectoryTest extends TestCase
         self::assertSame(0, (int) $pdo->query(
             "SELECT COUNT(*) FROM sqlite_temp_master WHERE name = 'territorial_directory_entries'",
         )->fetchColumn());
+        self::assertSame(1, (int) $pdo->query(
+            "SELECT COUNT(*) FROM sqlite_temp_master WHERE name = 'canonical_street_directory_entries'",
+        )->fetchColumn());
+    }
+
+    public function testTerritorialOnlyLookupDoesNotPrepareStreetTemporaryIndex(): void
+    {
+        $directory = new SqliteAddressDirectory($this->database);
+        $pdo = (new \ReflectionProperty(SqliteAddressDirectory::class, 'pdo'))->getValue($directory);
+
+        self::assertNotEmpty($directory->findTerritorialEntries('Roma'));
+        self::assertSame(0, (int) $pdo->query(
+            "SELECT COUNT(*) FROM sqlite_temp_master WHERE name = 'canonical_street_directory_entries'",
+        )->fetchColumn());
+    }
+
+    public function testCanonicalStreetQueryUsesTemporaryCompositeIndex(): void
+    {
+        $directory = new SqliteAddressDirectory($this->database);
+        $directory->findByStreetCityProvince('VIA DUPLICATA', 'ROMA', 'RM');
+        $pdo = (new \ReflectionProperty(SqliteAddressDirectory::class, 'pdo'))->getValue($directory);
+        $plan = $pdo->query(<<<'SQL'
+            EXPLAIN QUERY PLAN
+            SELECT d.id, d.vianum, d.cap, d.citta, d.pr, d.pari_dispa, d.civico_da, d.civico_a
+            FROM directory_entries AS d
+            WHERE d.vianum_key = 'VIA DUPLICATA' AND d.citta_key = 'ROMA' AND d.pr_key = 'RM'
+            UNION ALL
+            SELECT d.id, d.vianum, d.cap, d.citta, d.pr, d.pari_dispa, d.civico_da, d.civico_a
+            FROM canonical_street_directory_entries AS c
+            INNER JOIN directory_entries AS d ON d.id = c.id
+            WHERE c.vianum_key = 'VIA DUPLICATA' AND c.citta_key = 'ROMA' AND c.pr_key = 'RM'
+            ORDER BY id ASC
+            SQL)->fetchAll(PDO::FETCH_COLUMN, 3);
+
+        self::assertStringContainsString('idx_canonical_street_lookup', implode(' ', $plan));
+        self::assertStringContainsString('idx_directory_entries_lookup_key', implode(' ', $plan));
+    }
+
+    public function testFailedStreetTemporaryIndexPreparationRollsBackAndCanBeRetried(): void
+    {
+        $directory = new SqliteAddressDirectory($this->database);
+        $pdo = (new \ReflectionProperty(SqliteAddressDirectory::class, 'pdo'))->getValue($directory);
+        $pdo->exec('PRAGMA query_only = OFF');
+        $pdo->exec('CREATE TEMP TABLE conflicting_index_owner (value TEXT)');
+        $pdo->exec('CREATE INDEX temp.idx_canonical_street_lookup ON conflicting_index_owner (value)');
+        $pdo->exec('PRAGMA query_only = ON');
+
+        try {
+            $directory->findByStreetCityProvince('VIA DUPLICATA', 'ROMA', 'RM');
+            self::fail('Expected temporary street index preparation to fail on the conflicting index name.');
+        } catch (DirectorySchemaException $exception) {
+            self::assertSame('Unable to build the temporary canonical street lookup index.', $exception->getMessage());
+        }
+
+        self::assertFalse($pdo->query(
+            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = 'canonical_street_directory_entries'",
+        )->fetchColumn());
+
+        $pdo->exec('PRAGMA query_only = OFF');
+        $pdo->exec('DROP INDEX temp.idx_canonical_street_lookup');
+        $pdo->exec('DROP TABLE temp.conflicting_index_owner');
+        $pdo->exec('PRAGMA query_only = ON');
+        self::assertCount(2, $directory->findByStreetCityProvince('VIA DUPLICATA', 'ROMA', 'RM'));
+    }
+
+    public function testNonPdoCanonicalizationFailureLeavesNoPartialTerritorialTemporaryTables(): void
+    {
+        $pdo = new PDO('sqlite:' . $this->database, options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $pdo->exec("UPDATE directory_entries SET citta_key = CAST(X'FF' AS TEXT) WHERE id = 1");
+        unset($pdo);
+
+        $directory = new SqliteAddressDirectory($this->database);
+        $connection = (new \ReflectionProperty(SqliteAddressDirectory::class, 'pdo'))->getValue($directory);
+        try {
+            $directory->findTerritorialEntries('ROMA');
+            self::fail('Expected invalid UTF-8 in a stored city key to fail canonicalization.');
+        } catch (\InvalidArgumentException $exception) {
+            self::assertSame('Directory key contains invalid UTF-8.', $exception->getMessage());
+        }
+
+        foreach (['territorial_directory_entries', 'territorial_directory_groups', 'territorial_city_key_map'] as $table) {
+            self::assertFalse($connection->query(
+                "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = '" . $table . "'",
+            )->fetchColumn());
+        }
     }
 
     public function testTerritorialTemporaryIndexDoesNotChangePersistentDatabase(): void
@@ -149,14 +269,14 @@ final class SqliteAddressDirectoryTest extends TestCase
         $pdo = $property->getValue($directory);
         $pdo->exec('PRAGMA query_only = OFF');
         $pdo->exec('CREATE TEMP TABLE conflicting_index_owner (value TEXT)');
-        $pdo->exec('CREATE INDEX temp.idx_territorial_directory_city_key ON conflicting_index_owner (value)');
+        $pdo->exec('CREATE INDEX temp.idx_canonical_territorial_city_key ON conflicting_index_owner (value)');
         $pdo->exec('PRAGMA query_only = ON');
 
         try {
             $directory->findTerritorialEntries('Roma');
             self::fail('Expected temporary index preparation to fail on the conflicting index name.');
         } catch (DirectorySchemaException $exception) {
-            self::assertSame('Unable to build the temporary territorial lookup index.', $exception->getMessage());
+            self::assertSame('Unable to build the temporary canonical territorial lookup index.', $exception->getMessage());
         }
 
         self::assertFalse($pdo->query(
@@ -164,7 +284,7 @@ final class SqliteAddressDirectoryTest extends TestCase
         )->fetchColumn());
 
         $pdo->exec('PRAGMA query_only = OFF');
-        $pdo->exec('DROP INDEX temp.idx_territorial_directory_city_key');
+        $pdo->exec('DROP INDEX temp.idx_canonical_territorial_city_key');
         $pdo->exec('DROP TABLE temp.conflicting_index_owner');
         $pdo->exec('PRAGMA query_only = ON');
 

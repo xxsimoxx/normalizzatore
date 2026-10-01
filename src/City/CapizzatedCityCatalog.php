@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Normalizzatore\City;
 
 use InvalidArgumentException;
+use Normalizzatore\Text\OrthographyNormalizer;
 use RuntimeException;
 use SplFileObject;
 use UnexpectedValueException;
@@ -18,18 +19,21 @@ final readonly class CapizzatedCityCatalog
     /** @var array<string, CapizzatedCity> */
     private array $citiesByKey;
 
+    private OrthographyNormalizer $orthographyNormalizer;
+
     /**
      * @param list<CapizzatedCity> $cities
      */
-    public function __construct(array $cities)
+    public function __construct(array $cities, ?OrthographyNormalizer $orthographyNormalizer = null)
     {
+        $this->orthographyNormalizer = $orthographyNormalizer ?? new OrthographyNormalizer();
         $citiesByKey = [];
         foreach ($cities as $city) {
             if (!$city instanceof CapizzatedCity) {
                 throw new InvalidArgumentException('The city catalog accepts only CapizzatedCity values.');
             }
 
-            $key = self::normalizeName($city->name);
+            $key = $this->normalizeName($city->name);
             if ($key === '') {
                 throw new InvalidArgumentException('Capizzated city names cannot be empty.');
             }
@@ -94,7 +98,7 @@ final readonly class CapizzatedCityCatalog
 
     public function find(string $cityName): ?CapizzatedCity
     {
-        return $this->citiesByKey[self::normalizeName($cityName)] ?? null;
+        return $this->citiesByKey[$this->normalizeName($cityName)] ?? null;
     }
 
     /** @return list<CapizzatedCity> */
@@ -103,13 +107,8 @@ final readonly class CapizzatedCityCatalog
         return array_values($this->citiesByKey);
     }
 
-    private static function normalizeName(string $name): string
+    private function normalizeName(string $name): string
     {
-        $collapsed = preg_replace('/[\p{Z}\x09-\x0D\x{0085}]+/u', ' ', $name);
-        if ($collapsed === null) {
-            throw new InvalidArgumentException('City name contains invalid UTF-8.');
-        }
-
-        return mb_strtoupper(trim($collapsed), 'UTF-8');
+        return $this->orthographyNormalizer->normalize($name);
     }
 }

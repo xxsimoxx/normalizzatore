@@ -70,15 +70,16 @@ final class AddressFieldNormalizerTest extends TestCase
         $entry = $this->entry(1, 'VIA ROMA', '00100', 'ROMA', 'RM');
         $result = (new AddressFieldNormalizer())->normalize($input, $this->streetResolution($target, [$entry]));
 
-        self::assertSame('VIA ROMA', $result->street->normalizedValue);
+        self::assertSame('Via Roma', $result->street->normalizedValue);
         self::assertSame('15', $result->houseNumber->normalizedValue);
         self::assertSame('A', $result->civicDetails->normalizedValue);
         self::assertSame(NormalizedFieldStatus::CONFIRMED, $result->houseNumber->status);
         self::assertSame(NormalizationOrigin::SYNTAX, $result->houseNumber->origin);
         self::assertSame(NormalizationOrigin::SYNTAX, $result->civicDetails->origin);
         self::assertSame($target, $result->syntaxPreference?->preferredCandidate);
-        self::assertSame(NormalizationOrigin::DIRECTORY, $result->street->correction?->origin);
-        self::assertCount(1, $result->suggestedCorrections());
+        self::assertSame(NormalizedFieldStatus::CONFIRMED, $result->street->status);
+        self::assertNull($result->street->correction);
+        self::assertCount(0, $result->suggestedCorrections());
         self::assertSame('Via Roma 15 A', $result->sourceVianum);
         self::assertSame('Via Roma 15 A', $input->vianum);
     }
@@ -90,7 +91,7 @@ final class AddressFieldNormalizerTest extends TestCase
         $entry = $this->entry(1, 'VIA 8 LUGLIO', '00100', 'ROMA', 'RM');
         $result = (new AddressFieldNormalizer())->normalize($input, $this->streetResolution($target, [$entry]));
 
-        self::assertSame('VIA 8 LUGLIO', $result->street->normalizedValue);
+        self::assertSame('Via 8 Luglio', $result->street->normalizedValue);
         self::assertSame('15', $result->houseNumber->normalizedValue);
         self::assertSame('A', $result->civicDetails->normalizedValue);
     }
@@ -165,10 +166,10 @@ final class AddressFieldNormalizerTest extends TestCase
         ]);
         $result = (new AddressFieldNormalizer())->normalize($input, $resolution);
 
-        self::assertSame('VIA ROMA', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::DIRECTORY_CORRECTION, $result->street->status);
-        self::assertSame(NormalizationOrigin::DIRECTORY, $result->street->origin);
-        self::assertCount(1, $result->suggestedCorrections());
+        self::assertSame('via roma', $result->street->normalizedValue);
+        self::assertSame(NormalizedFieldStatus::CONFIRMED, $result->street->status);
+        self::assertSame(NormalizationOrigin::ORIGINAL, $result->street->origin);
+        self::assertCount(0, $result->suggestedCorrections());
     }
 
     public function testDirectoryCaseVariantsDoNotCreateFalseStreetAmbiguity(): void
@@ -235,8 +236,8 @@ final class AddressFieldNormalizerTest extends TestCase
         );
         $result = (new AddressFieldNormalizer())->normalize(new AddressInput('Via Roma 15', null, 'Roma', 'RM'), $resolution);
 
-        self::assertSame('VIA ROMA', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::DIRECTORY_CORRECTION, $result->street->status);
+        self::assertSame('Via Roma', $result->street->normalizedValue);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
         self::assertSame(NormalizedFieldStatus::AMBIGUOUS, $result->houseNumber->status);
         self::assertSame($resolution, $result->resolutionEvidence);
     }
@@ -517,8 +518,8 @@ final class AddressFieldNormalizerTest extends TestCase
         $result = (new AddressFieldNormalizer())->normalize($input, $resolution);
 
         self::assertSame($preferred, $result->syntaxPreference?->preferredCandidate);
-        self::assertSame('VIA ROMA 50', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::DIRECTORY_CORRECTION, $result->street->status);
+        self::assertSame('via roma 50', $result->street->normalizedValue);
+        self::assertSame(NormalizedFieldStatus::CONFIRMED, $result->street->status);
         self::assertSame('00123', $resolution->resolvedCap);
         self::assertCount(2, $resolution->streetCandidateResolutions);
     }
@@ -553,7 +554,7 @@ final class AddressFieldNormalizerTest extends TestCase
                 array_map(static fn (DirectoryEntry $entry): array => [$entry->id, $entry->vianum, $entry->cap], $after),
             );
             self::assertSame('15', $normalized->houseNumber->normalizedValue);
-            self::assertSame('VIA ROMA', $normalized->street->normalizedValue);
+            self::assertSame('Via Roma', $normalized->street->normalizedValue);
 
             $territorialInput = new AddressInput('Via qualunque', '99999', 'Olbia', 'SS');
             $territorialOrchestrator = new AddressResolutionOrchestrator(

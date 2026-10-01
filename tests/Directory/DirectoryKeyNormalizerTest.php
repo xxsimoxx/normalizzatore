@@ -11,7 +11,7 @@ use PHPUnit\Framework\TestCase;
 final class DirectoryKeyNormalizerTest extends TestCase
 {
     #[DataProvider('normalizationCases')]
-    public function testNormalizesOnlyWhitespaceAndUnicodeCase(string $input, string $expected): void
+    public function testNormalizesWhitespaceUnicodeCaseAndSupportedOrthography(string $input, string $expected): void
     {
         self::assertSame($expected, (new DirectoryKeyNormalizer())->normalize($input));
     }
@@ -26,20 +26,35 @@ final class DirectoryKeyNormalizerTest extends TestCase
         yield 'nonbreaking space' => ["Via\u{00A0}Roma", 'VIA ROMA'];
         yield 'unicode next line' => ["Via\u{0085}Roma", 'VIA ROMA'];
         yield 'ideographic space' => ["Via\u{3000}Roma", 'VIA ROMA'];
-        yield 'accented Italian' => ['Magrè sulla strada del vino', 'MAGRÈ SULLA STRADA DEL VINO'];
+        yield 'accented Italian' => ['Magrè sulla strada del vino', "MAGRE' SULLA STRADA DEL VINO"];
+        yield 'city grave accent' => ['Torpè', "TORPE'"];
+        yield 'curly apostrophe' => ['D’Annunzio', "D'ANNUNZIO"];
+        yield 'left curly apostrophe' => ['D‘Annunzio', "D'ANNUNZIO"];
+        yield 'acute accent apostrophe' => ['D´Annunzio', "D'ANNUNZIO"];
+        yield 'backtick apostrophe' => ['D`Annunzio', "D'ANNUNZIO"];
         yield 'apostrophe preserved' => ["Cafe'", "CAFE'"];
         yield 'hyphen preserved' => ['Via San-Pietro', 'VIA SAN-PIETRO'];
         yield 'periods preserved' => ['S.S. Audiface', 'S.S. AUDIFACE'];
         yield 'slash preserved' => ['Via 4/A', 'VIA 4/A'];
     }
 
-    public function testDoesNotExpandAbbreviationOrRemoveAccents(): void
+    public function testDoesNotExpandAbbreviationOrRemoveUnsupportedDiacritics(): void
     {
         $normalizer = new DirectoryKeyNormalizer();
 
         self::assertSame('S.S.', $normalizer->normalize('S.S.'));
         self::assertNotSame('SANTI', $normalizer->normalize('S.S.'));
-        self::assertSame('MAGRÈ', $normalizer->normalize('Magrè'));
-        self::assertNotSame('MAGRE', $normalizer->normalize('Magrè'));
+        self::assertSame("MAGRE'", $normalizer->normalize('Magrè'));
+        self::assertSame('FRANÇOIS', $normalizer->normalize('François'));
+    }
+
+    public function testNormalizationIsIdempotentForSupportedOrthographicVariants(): void
+    {
+        $normalizer = new DirectoryKeyNormalizer();
+
+        foreach (["  Torpè  ", "Via D’Annunzio", "A\u{0300}LA' dei Sardi", 'VIA LOCALITA` LE SALINE'] as $value) {
+            $normalized = $normalizer->normalize($value);
+            self::assertSame($normalized, $normalizer->normalize($normalized));
+        }
     }
 }

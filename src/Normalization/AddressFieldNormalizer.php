@@ -201,7 +201,19 @@ final readonly class AddressFieldNormalizer
         if ($allowDirectoryValue && count($directoryValues) === 1) {
             $directoryValue = $directoryValues[0];
             if ($this->sameConservativeKey($original, $directoryValue) && $directoryValue !== $original) {
-                return $this->corrected($field, $original, $directoryValue, NormalizationOrigin::DIRECTORY);
+                if ($original !== $syntaxValue) {
+                    return $this->syntaxOrOriginal($field, $original, $syntaxValue, [], NormalizationOrigin::SYNTAX);
+                }
+
+                // A matching lookup key now includes case, whitespace and the explicit
+                // orthographic equivalences; those alone do not justify a directory correction.
+                return new NormalizedField(
+                    $field,
+                    $original,
+                    $original,
+                    NormalizationOrigin::ORIGINAL,
+                    NormalizedFieldStatus::CONFIRMED,
+                );
             }
         }
 
@@ -349,30 +361,6 @@ final readonly class AddressFieldNormalizer
             $normalized,
             NormalizationOrigin::SYNTAX,
             NormalizedFieldStatus::SYNTAX_NORMALIZED,
-            $correction,
-            $diagnostics,
-        );
-    }
-
-    /** @param list<AddressFieldDiagnostic> $diagnostics */
-    private function corrected(
-        NormalizedFieldName $field,
-        string $original,
-        string $proposed,
-        NormalizationOrigin $origin,
-        array $diagnostics = [],
-    ): NormalizedField {
-        $reason = $origin === NormalizationOrigin::DIRECTORY
-            ? FieldCorrectionReason::DIRECTORY_CANONICAL_VALUE
-            : FieldCorrectionReason::WHITESPACE_NORMALIZATION;
-        $correction = new FieldCorrection($field, $original, $proposed, $reason, $origin);
-
-        return new NormalizedField(
-            $field,
-            $original,
-            $proposed,
-            $origin,
-            NormalizedFieldStatus::DIRECTORY_CORRECTION,
             $correction,
             $diagnostics,
         );

@@ -6,6 +6,9 @@ namespace Normalizzatore\Tests\City;
 
 use Normalizzatore\City\CapizzatedCity;
 use Normalizzatore\City\CapizzatedCityCatalog;
+use Normalizzatore\Address\AddressInput;
+use Normalizzatore\Address\AddressResolutionStrategy;
+use Normalizzatore\Address\AddressStrategyClassifier;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use UnexpectedValueException;
@@ -47,6 +50,21 @@ final class CapizzatedCityCatalogTest extends TestCase
         self::assertTrue($catalog->isCapizzated('reggio' . "\t" . 'calabria'));
         self::assertFalse($catalog->isCapizzated('La Spezia, SP'));
         self::assertFalse($catalog->isCapizzated('Olbia'));
+    }
+
+    public function testSupportedOrthographicVariantsUseTheSameCatalogEntry(): void
+    {
+        $catalog = $this->catalog();
+
+        self::assertSame('FORLI\'', $catalog->find('FORLÌ')?->name);
+        self::assertSame('FORLI\'', $catalog->find('Forli’')?->name);
+        self::assertTrue($catalog->isCapizzated("FORLI'"));
+        $classifier = new AddressStrategyClassifier($catalog);
+        self::assertSame(
+            $classifier->classify(new AddressInput('Via Roma', null, 'FORLÌ', null)),
+            $classifier->classify(new AddressInput('Via Roma', null, "FORLI'", null)),
+        );
+        self::assertSame(AddressResolutionStrategy::STREET_BASED, $classifier->classify(new AddressInput('Via Roma', null, 'FORLÌ', null)));
     }
 
     public function testMestreAndVeneziaRemainDistinctEntries(): void

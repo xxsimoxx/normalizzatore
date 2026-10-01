@@ -8,10 +8,15 @@ use Normalizzatore\Application\AddressProcessingResult;
 use Normalizzatore\Normalization\NormalizedField;
 use Normalizzatore\Normalization\NormalizedFieldName;
 use Normalizzatore\Normalization\NormalizedFieldStatus;
+use Normalizzatore\Text\OrthographyNormalizer;
 
 /** Pure mapping of a processing result to the ten appended CSV columns. */
 final class AddressProcessingResultSerializer
 {
+    public function __construct(private OrthographyNormalizer $orthographyNormalizer = new OrthographyNormalizer())
+    {
+    }
+
     public const OUTPUT_COLUMNS = [
         'via_normalizzata', 'civico_normalizzato', 'dettagli_normalizzati', 'cap_normalizzato',
         'citta_normalizzata', 'provincia_normalizzata', 'stato_risoluzione', 'verifica_cap',
@@ -32,7 +37,7 @@ final class AddressProcessingResultSerializer
             if ($field->correction !== null) {
                 $correction = $field->correction;
                 $corrections[] = $this->fieldCode($correction->field) . ':' . $this->quote($correction->originalValue)
-                    . '->' . $this->quote($correction->proposedValue) . ':' . $correction->reason->value;
+                    . '->' . $this->quote($this->canonicalCorrectionValue($correction->field, $correction->proposedValue)) . ':' . $correction->reason->value;
             }
         }
 
@@ -56,11 +61,11 @@ final class AddressProcessingResultSerializer
         }
 
         return [
-            $this->outputField($fields->street),
+            $this->outputField($fields->street, true),
             $this->outputField($fields->houseNumber),
             $this->outputField($fields->civicDetails),
             $result->normalizedCap() ?? '',
-            $this->outputField($fields->city),
+            $this->outputField($fields->city, true),
             $this->outputField($fields->province),
             $result->resolution->status->name,
             $result->capVerification->status->name,
@@ -69,13 +74,26 @@ final class AddressProcessingResultSerializer
         ];
     }
 
-    private function outputField(NormalizedField $field): string
+    private function outputField(NormalizedField $field, bool $canonicalizeOrthography = false): string
     {
-        return in_array($field->status, [
+        if (!in_array($field->status, [
             NormalizedFieldStatus::CONFIRMED,
             NormalizedFieldStatus::SYNTAX_NORMALIZED,
             NormalizedFieldStatus::DIRECTORY_CORRECTION,
-        ], true) ? ($field->normalizedValue ?? '') : '';
+        ], true)) {
+            return '';
+        }
+
+        $value = $field->normalizedValue ?? '';
+
+        return $canonicalizeOrthography ? $this->orthographyNormalizer->normalize($value) : $value;
+    }
+
+    private function canonicalCorrectionValue(NormalizedFieldName $field, string $value): string
+    {
+        return in_array($field, [NormalizedFieldName::STREET, NormalizedFieldName::CITY], true)
+            ? $this->orthographyNormalizer->normalize($value)
+            : $value;
     }
 
     private function fieldCode(NormalizedFieldName $field): string

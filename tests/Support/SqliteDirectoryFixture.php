@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Normalizzatore\Tests\Support;
 
-use Normalizzatore\Directory\DirectoryKeyNormalizer;
 use Normalizzatore\Directory\SqliteDirectoryImporter;
 use PDO;
 
@@ -41,14 +40,23 @@ final class SqliteDirectoryFixture
             (vianum, cap, citta, pr, pari_dispa, civico_da, civico_a, vianum_key, citta_key, pr_key)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             SQL);
-        $normalizer = new DirectoryKeyNormalizer();
         foreach ($rows as $row) {
             $insert->execute([
                 $row['vianum'], $row['cap'], $row['citta'], $row['pr'], $row['pari_dispa'], $row['civico_da'], $row['civico_a'],
-                $normalizer->normalize($row['vianum']), $normalizer->normalize($row['citta']), $normalizer->normalize($row['pr']),
+                self::legacyKey($row['vianum']), self::legacyKey($row['citta']), self::legacyKey($row['pr']),
             ]);
         }
         $pdo->exec('CREATE INDEX idx_directory_entries_lookup_key ON directory_entries (vianum_key, citta_key, pr_key)');
+    }
+
+    private static function legacyKey(string $value): string
+    {
+        $collapsed = preg_replace('/[\p{Z}\x09-\x0D\x{0085}]+/u', ' ', $value);
+        if ($collapsed === null) {
+            throw new \InvalidArgumentException('Fixture value contains invalid UTF-8.');
+        }
+
+        return mb_strtoupper(trim($collapsed), 'UTF-8');
     }
 
     /** @return array{vianum: string, cap: string, citta: string, pr: string, pari_dispa: string, civico_da: string, civico_a: string} */

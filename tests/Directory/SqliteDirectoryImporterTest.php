@@ -47,7 +47,7 @@ final class SqliteDirectoryImporterTest extends TestCase
         self::assertSame('00165', $pdo->query('SELECT cap FROM directory_entries WHERE id = 1')->fetchColumn());
         self::assertSame('', $pdo->query('SELECT cap FROM directory_entries WHERE id = 4')->fetchColumn());
         self::assertSame('VIA CITTÀ', $pdo->query('SELECT vianum FROM directory_entries WHERE id = 1')->fetchColumn());
-        self::assertSame('VIA CITTÀ', $pdo->query('SELECT vianum_key FROM directory_entries WHERE id = 1')->fetchColumn());
+        self::assertSame("VIA CITTA'", $pdo->query('SELECT vianum_key FROM directory_entries WHERE id = 1')->fetchColumn());
         self::assertSame('ROMA', $pdo->query('SELECT citta_key FROM directory_entries WHERE id = 1')->fetchColumn());
         self::assertSame('RM', $pdo->query('SELECT pr_key FROM directory_entries WHERE id = 1')->fetchColumn());
         self::assertSame('Via   disus', $pdo->query('SELECT vianum FROM directory_entries WHERE id = 2')->fetchColumn());

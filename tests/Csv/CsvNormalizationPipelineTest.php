@@ -41,6 +41,7 @@ final class CsvNormalizationPipelineTest extends TestCase
             SqliteDirectoryFixture::row('OLBIA', '07026', 'OLBIA', 'SS', '', '', ''),
             SqliteDirectoryFixture::row('CASTRO', '24063', 'CASTRO', 'BG', '', '', ''),
             SqliteDirectoryFixture::row('CASTRO', '73030', 'CASTRO', 'LE', '', '', ''),
+            SqliteDirectoryFixture::row("VIA LOCALITA` LE SALINE", '08020', 'Torpè', 'NU', 'T', '', ''),
         ]);
         $directory = new SqliteAddressDirectory($this->database);
         $orchestrator = new AddressResolutionOrchestrator(
@@ -102,6 +103,21 @@ final class CsvNormalizationPipelineTest extends TestCase
         self::assertSame('RESOLVED', $document->rows[0][count($document->header) - 4]);
     }
 
+    public function testCanonicalizesStreetAndCityOutputButPreservesTheirSourceColumns(): void
+    {
+        $input = $this->write('orthographic.csv', "vianum;CAP;citta;Provincia\nVIA LOCALITA` LE SALINE;08020;Torpè;NU\n");
+        $output = $this->directory . '/orthographic-output.csv';
+
+        $this->pipeline->run($input, $output);
+        $row = (new CsvReader())->read($output, ';')->rows[0];
+
+        self::assertSame("VIA LOCALITA` LE SALINE", $row[0]);
+        self::assertSame('Torpè', $row[2]);
+        self::assertSame("VIA LOCALITA' LE SALINE", $row[4]);
+        self::assertSame("TORPE'", $row[8]);
+        self::assertSame('', $row[12]);
+    }
+
     public function testNoMatchLeavesNormalizedCapEmptyRatherThanFallingBackToSource(): void
     {
         $input = $this->write('no-match.csv', "vianum;CAP;citta;Provincia\nVia sconosciuta 1;07026;DORGALI;NU\n");
@@ -127,11 +143,11 @@ final class CsvNormalizationPipelineTest extends TestCase
         self::assertSame('VIA ROMA', $rows[0][4]);
         self::assertSame('15', $rows[0][5]);
         self::assertSame('00100', $rows[0][7]);
-        self::assertSame('roma', $rows[0][8]);
+        self::assertSame('ROMA', $rows[0][8]);
         self::assertSame('RESOLVED', $rows[0][10]);
         self::assertSame('MISMATCH', $rows[0][11]);
         self::assertStringContainsString('CAP:"99999"->"00100":source_cap_mismatch', $rows[0][12]);
-        self::assertStringContainsString('VIA:"via roma"->"VIA ROMA":directory_canonical_value', $rows[0][12]);
+        self::assertStringNotContainsString('VIA:', $rows[0][12]);
 
         self::assertSame('VIA INESISTENTE', $rows[1][4]);
         self::assertSame('4', $rows[1][5]);
@@ -160,7 +176,7 @@ final class CsvNormalizationPipelineTest extends TestCase
         $this->pipeline->run($input, $output);
         $row = (new CsvReader())->read($output, ';')->rows[0];
 
-        self::assertStringContainsString('VIA:"via a ""b"" \\| c\\: d\\->e"->"VIA A ""B"" \\| C\\: D\\->E":directory_canonical_value', $row[12]);
+        self::assertSame('CAP:"99999"->"00100":source_cap_mismatch', $row[12]);
     }
 
     public function testAmbiguousTerritorialResultKeepsNormalizedCapEmpty(): void
