@@ -212,7 +212,9 @@ final readonly class AddressFieldNormalizer
                 $result->originalValue,
                 $result->normalizedValue,
                 $result->origin,
-                NormalizedFieldStatus::UNVERIFIABLE,
+                $result->origin === NormalizationOrigin::SYNTAX
+                    ? NormalizedFieldStatus::SYNTAX_NORMALIZED
+                    : NormalizedFieldStatus::UNVERIFIABLE,
                 $result->correction,
                 [...$result->diagnostics, AddressFieldDiagnostic::NO_DIRECTORY_EVIDENCE],
             );

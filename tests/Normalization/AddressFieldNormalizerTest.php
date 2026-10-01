@@ -19,6 +19,8 @@ use Normalizzatore\Directory\TerritorialEntry;
 use Normalizzatore\Normalization\AddressFieldDiagnostic;
 use Normalizzatore\Normalization\AddressFieldNormalizer;
 use Normalizzatore\Normalization\FieldCorrectionReason;
+use Normalizzatore\Normalization\NormalizedField;
+use Normalizzatore\Normalization\NormalizedFieldName;
 use Normalizzatore\Normalization\NormalizedFieldStatus;
 use Normalizzatore\Normalization\NormalizationOrigin;
 use Normalizzatore\Resolution\AddressResolution;
@@ -38,6 +40,27 @@ use PHPUnit\Framework\TestCase;
 
 final class AddressFieldNormalizerTest extends TestCase
 {
+    public function testSyntaxNormalizedMayBeCorrectionFreeWhileDirectoryCorrectionStillRequiresEvidence(): void
+    {
+        $syntax = new NormalizedField(
+            NormalizedFieldName::STREET,
+            'VIA ROMA',
+            'VIA ROMA',
+            NormalizationOrigin::SYNTAX,
+            NormalizedFieldStatus::SYNTAX_NORMALIZED,
+        );
+        self::assertNull($syntax->correction);
+
+        $this->expectException(\InvalidArgumentException::class);
+        new NormalizedField(
+            NormalizedFieldName::STREET,
+            'VIA ROMA',
+            'VIA ROMA NUOVA',
+            NormalizationOrigin::DIRECTORY,
+            NormalizedFieldStatus::DIRECTORY_CORRECTION,
+        );
+    }
+
     public function testParsesStreetCivicNumberAndOpaqueLetterWithoutChangingTheSource(): void
     {
         $input = new AddressInput('Via Roma 15 A', '00100', 'Roma', 'RM');
@@ -114,10 +137,10 @@ final class AddressFieldNormalizerTest extends TestCase
         self::assertSame('rm', $result->province->normalizedValue);
         self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->province->status);
         self::assertSame('Via Roma', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
     }
 
-    public function testSyntaxCorrectionCanRemainUnverifiableWithoutDirectoryEvidence(): void
+    public function testSyntaxCorrectionIsExportableWithoutDirectoryEvidence(): void
     {
         $input = new AddressInput('Via  Roma SNC', null, 'Olbia', 'SS');
         $resolution = $this->territorialResolution([]);
@@ -125,7 +148,7 @@ final class AddressFieldNormalizerTest extends TestCase
 
         self::assertSame('Via  Roma', $result->street->originalValue);
         self::assertSame('Via Roma', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
         self::assertSame(NormalizationOrigin::SYNTAX, $result->street->origin);
         self::assertSame(FieldCorrectionReason::WHITESPACE_NORMALIZATION, $result->street->correction?->reason);
         self::assertSame('Via  Roma SNC', $input->vianum);
@@ -230,9 +253,9 @@ final class AddressFieldNormalizerTest extends TestCase
         self::assertSame('xx', $result->province->normalizedValue);
         self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->province->status);
         self::assertContains(AddressFieldDiagnostic::PROVINCE_SIGLA_DIFFERS_FROM_DIRECTORY, $result->province->diagnostics);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
         self::assertSame('Via Roma', $result->street->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->houseNumber->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->houseNumber->status);
         self::assertSame('15', $result->houseNumber->normalizedValue);
     }
 
@@ -375,7 +398,7 @@ final class AddressFieldNormalizerTest extends TestCase
         $result = (new AddressFieldNormalizer())->normalize($input, $resolution);
 
         self::assertSame('Via Roma 15', $result->sourceVianum);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
         self::assertSame('Via Roma', $result->street->normalizedValue);
         self::assertSame('15', $result->houseNumber->normalizedValue);
         self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->city->status);
@@ -393,12 +416,82 @@ final class AddressFieldNormalizerTest extends TestCase
         self::assertSame('15', $result->houseNumber->normalizedValue);
         self::assertSame('A', $result->civicDetails->normalizedValue);
         foreach ([$result->street, $result->houseNumber, $result->civicDetails] as $field) {
-            self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $field->status);
+            self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $field->status);
             self::assertSame(NormalizationOrigin::SYNTAX, $field->origin);
         }
         self::assertSame([], $result->suggestedCorrections());
         self::assertSame('VIA 8 LUGLIO 15 A', $input->vianum);
         self::assertSame($resolution, $result->resolutionEvidence);
+    }
+
+    public function testTerritorialPreferredCandidateIsExportableAsSyntaxWithoutCreatingStructuralCorrections(): void
+    {
+        $input = new AddressInput('VIA ROMA 50', '00100', 'Olbia', 'SS');
+        $result = (new AddressFieldNormalizer())->normalize($input, $this->territorialResolution([]));
+
+        self::assertSame(AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, $result->syntaxPreference?->reason);
+        self::assertSame('VIA ROMA', $result->street->normalizedValue);
+        self::assertSame('50', $result->houseNumber->normalizedValue);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->houseNumber->status);
+        self::assertSame(NormalizationOrigin::SYNTAX, $result->street->origin);
+        self::assertSame(NormalizationOrigin::SYNTAX, $result->houseNumber->origin);
+        self::assertNull($result->street->correction);
+        self::assertNull($result->houseNumber->correction);
+        self::assertContains(AddressFieldDiagnostic::NO_DIRECTORY_EVIDENCE, $result->street->diagnostics);
+        self::assertSame([], $result->suggestedCorrections());
+    }
+
+    public function testNumericToponymAndFinalCivicWithSuffixAreSeparatedByExistingPreference(): void
+    {
+        $input = new AddressInput('VIA 4 NOVEMBRE 14 A', null, 'Olbia', 'SS');
+        $result = (new AddressFieldNormalizer())->normalize($input, $this->territorialResolution([]));
+
+        self::assertSame(AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, $result->syntaxPreference?->reason);
+        self::assertSame('VIA 4 NOVEMBRE', $result->street->normalizedValue);
+        self::assertSame('14', $result->houseNumber->normalizedValue);
+        self::assertSame('A', $result->civicDetails->normalizedValue);
+        foreach ([$result->street, $result->houseNumber, $result->civicDetails] as $field) {
+            self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $field->status);
+            self::assertSame(NormalizationOrigin::SYNTAX, $field->origin);
+        }
+        self::assertSame([], $result->suggestedCorrections());
+    }
+
+    public function testSingleTerritorialCandidateAndSNCExposeStreetButNeverInventCivicNumber(): void
+    {
+        $normalizer = new AddressFieldNormalizer();
+        foreach ([
+            new AddressInput('VIA ROMA', null, 'Olbia', 'SS'),
+            new AddressInput('VIA ROMA SNC', null, 'Olbia', 'SS'),
+        ] as $input) {
+            $result = $normalizer->normalize($input, $this->territorialResolution([]));
+
+            self::assertSame('VIA ROMA', $result->street->normalizedValue);
+            self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->street->status);
+            self::assertNull($result->houseNumber->normalizedValue);
+            self::assertSame(NormalizedFieldStatus::MISSING, $result->houseNumber->status);
+            self::assertNull($result->civicDetails->normalizedValue);
+            self::assertSame(NormalizedFieldStatus::MISSING, $result->civicDetails->status);
+        }
+    }
+
+    public function testTerritorialComplexNumericInputsRemainAmbiguousWhenPreferenceEvaluatorAbstains(): void
+    {
+        foreach ([
+            'VIA DEL GRIFO 4/INT 8',
+            'VIA SARDEGNA 12/B 15',
+            'VIA CADORE A3 INT. 3',
+        ] as $source) {
+            $input = new AddressInput($source, null, 'Olbia', 'SS');
+            $result = (new AddressFieldNormalizer())->normalize($input, $this->territorialResolution([]));
+
+            self::assertNull($result->syntaxPreference?->preferredCandidate, $source);
+            self::assertSame(NormalizedFieldStatus::AMBIGUOUS, $result->street->status, $source);
+            self::assertSame(NormalizedFieldStatus::AMBIGUOUS, $result->houseNumber->status, $source);
+            self::assertNull($result->street->normalizedValue, $source);
+            self::assertNull($result->houseNumber->normalizedValue, $source);
+        }
     }
 
     public function testStreetDirectoryEvidenceIsNotOverriddenBySyntaxPreference(): void
@@ -473,7 +566,7 @@ final class AddressFieldNormalizerTest extends TestCase
             $territorialResolution = $territorialOrchestrator->resolve($territorialInput);
             self::assertSame([], $territorialResolution->territorialResolution?->evidence);
             $territorialFields = $normalizer->normalize($territorialInput, $territorialResolution);
-            self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $territorialFields->street->status);
+            self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $territorialFields->street->status);
             self::assertSame([], $territorialFields->resolutionEvidence->streetCandidateResolutions);
         } finally {
             @unlink($path);

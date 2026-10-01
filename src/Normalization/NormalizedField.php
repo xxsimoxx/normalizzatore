@@ -46,8 +46,9 @@ final readonly class NormalizedField
             throw new InvalidArgumentException('A directory correction status requires directory evidence.');
         }
         if ($status === NormalizedFieldStatus::SYNTAX_NORMALIZED
-            && ($correction === null || $correction->origin !== NormalizationOrigin::SYNTAX)) {
-            throw new InvalidArgumentException('A syntax-normalized status requires a syntax correction.');
+            && ($origin !== NormalizationOrigin::SYNTAX
+                || ($correction !== null && $correction->origin !== NormalizationOrigin::SYNTAX))) {
+            throw new InvalidArgumentException('A syntax-normalized status requires a syntax origin.');
         }
         if ($status === NormalizedFieldStatus::AMBIGUOUS
             && $correction !== null) {

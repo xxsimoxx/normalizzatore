@@ -118,7 +118,7 @@ final class CsvNormalizationPipelineTest extends TestCase
 
     public function testWritesOnlyDeterminedFieldsAndSerializesTypedFieldCorrection(): void
     {
-        $input = $this->write('field-states.csv', "vianum;CAP;citta;Provincia\nvia roma 15;99999; roma ;rm\nVIA INESISTENTE 4;00100;ROMA;RM\n; ; ;\nVIA SARDEGNA 12/B 15;07026;OLBIA;SS\n;07026; OLBIA ;SS\n");
+        $input = $this->write('field-states.csv', "vianum;CAP;citta;Provincia\nvia roma 15;99999; roma ;rm\nVIA INESISTENTE 4;00100;ROMA;RM\n; ; ;\nVIA SARDEGNA 12/B 15;07026;OLBIA;SS\n;07026; OLBIA ;SS\nVIA ROMA 50;07026;OLBIA;SS\n");
         $output = $this->directory . '/field-states-output.csv';
 
         $summary = $this->pipeline->run($input, $output);
@@ -133,8 +133,8 @@ final class CsvNormalizationPipelineTest extends TestCase
         self::assertStringContainsString('CAP:"99999"->"00100":source_cap_mismatch', $rows[0][12]);
         self::assertStringContainsString('VIA:"via roma"->"VIA ROMA":directory_canonical_value', $rows[0][12]);
 
-        self::assertSame('', $rows[1][4]);
-        self::assertSame('', $rows[1][5]);
+        self::assertSame('VIA INESISTENTE', $rows[1][4]);
+        self::assertSame('4', $rows[1][5]);
         self::assertSame('', $rows[1][8]);
         self::assertSame('', $rows[2][4]);
         self::assertSame('', $rows[2][5]);
@@ -146,6 +146,9 @@ final class CsvNormalizationPipelineTest extends TestCase
         self::assertSame('OLBIA', $rows[4][8]);
         self::assertSame('RESOLVED', $rows[4][10]);
         self::assertStringContainsString('CITTA:" OLBIA "->"OLBIA":whitespace_normalization', $rows[4][12]);
+        self::assertSame('VIA ROMA', $rows[5][4]);
+        self::assertSame('50', $rows[5][5]);
+        self::assertSame('', $rows[5][12]);
         self::assertSame(2, $summary->rowsWithCorrections);
     }
 

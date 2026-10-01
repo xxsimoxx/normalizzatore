@@ -68,7 +68,7 @@ final class AddressProcessorTest extends TestCase
         self::assertSame(SourceCapVerificationStatus::MATCH, $result->capVerification->status);
         self::assertNull($result->sourceCapCorrection());
         self::assertSame($result->resolution, $result->fieldNormalization->resolutionEvidence);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->fieldNormalization->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->fieldNormalization->street->status);
         self::assertSame(NormalizationOrigin::SYNTAX, $result->fieldNormalization->street->origin);
         self::assertNotNull($result->fieldNormalization->syntaxPreference?->preferredCandidate);
     }
@@ -145,7 +145,7 @@ final class AddressProcessorTest extends TestCase
 
         self::assertSame('VIA ROMA', $result->fieldNormalization->street->normalizedValue);
         self::assertSame('50', $result->fieldNormalization->houseNumber->normalizedValue);
-        self::assertSame(NormalizedFieldStatus::UNVERIFIABLE, $result->fieldNormalization->street->status);
+        self::assertSame(NormalizedFieldStatus::SYNTAX_NORMALIZED, $result->fieldNormalization->street->status);
         self::assertSame(NormalizationOrigin::SYNTAX, $result->fieldNormalization->street->origin);
         self::assertSame('07026', $result->normalizedCap());
         self::assertSame(SourceCapVerificationStatus::MISMATCH, $result->capVerification->status);
