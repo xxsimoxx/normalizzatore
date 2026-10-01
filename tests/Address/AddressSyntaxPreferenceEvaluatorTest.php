@@ -54,7 +54,6 @@ final class AddressSyntaxPreferenceEvaluatorTest extends TestCase
 
     public static function unpreferredExamples(): iterable
     {
-        yield 'complex internal detail' => ['VIA DEL GRIFO 4/INT 8', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'lettered civic then number' => ['VIA SARDEGNA 12/B 15', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'no civic' => ['VIA ROMA', AddressSyntaxPreferenceReason::NO_CIVIC_NUMBER];
         yield 'explicit no civic' => ['VIA ROMA SNC', AddressSyntaxPreferenceReason::EXPLICIT_SNC];
@@ -70,7 +69,6 @@ final class AddressSyntaxPreferenceEvaluatorTest extends TestCase
         yield 'date civic exceeds conservative bound' => ['VIA 4 NOVEMBRE 1470', AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
         yield 'day month with numeric detail is ambiguous' => ['VIA 18 GIUGNO 149/6', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'date and complex internal tail' => ['VIA SETTEMBRE 1944 24/INT 2', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
-        yield 'complex internal tail remains outside date rule' => ['VIA DEL GRIFO 4/INT 8', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'slash suffix and following number remain complex' => ['VIA ENRICO TOTI 59/C 8', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'lettered slash suffix and following number remain complex' => ['VIA SAN MAIOLO 5/P 1', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'month and year without day remain ambiguous' => ['VIA NOVEMBRE 1918 23/15', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
@@ -78,6 +76,10 @@ final class AddressSyntaxPreferenceEvaluatorTest extends TestCase
         yield 'non-canonical Roman day' => ['VIA IIX MAGGIO 1944 6', AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
         yield 'year above supported range' => ['VIA 21 OTTOBRE 2100 4', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'year below supported range' => ['VIA 21 OTTOBRE 1799 4', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'explicit marker cannot validate numeric street name' => ['VIA SETTEMBRE 1944 24/INT 2', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'numeric street name remains ambiguous with explicit marker' => ['VIA 4 NOVEMBRE 14 INT 2', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'bare suffix plus marker is outside the observed grammar' => ['VIA ROMA 12 A INT 3', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'marker cannot validate incomplete street' => ['VIA 12 INT 3', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
     }
 
     #[DataProvider('streetDateExamples')]
@@ -140,6 +142,58 @@ final class AddressSyntaxPreferenceEvaluatorTest extends TestCase
         yield 'Roman fifth May' => ['VIA V MAGGIO 32/C', AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, 'VIA V MAGGIO', '32', '/C'];
         yield 'twenty fifth April with civic suffix' => ['PIAZZA XXV APRILE 26 B', AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, 'PIAZZA XXV APRILE', '26', 'B'];
         yield 'four November civic fifty five' => ['VIA 4 NOVEMBRE 55', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA 4 NOVEMBRE', '55', ''];
+    }
+
+    #[DataProvider('explicitDetailMarkerExamples')]
+    public function testPrefersCivicBeforeExplicitDetailMarkerAndKeepsTailOpaque(
+        string $source,
+        string $street,
+        string $number,
+        string $details,
+    ): void {
+        $parsed = (new AddressParser())->parse(new AddressInput($source, null, null, null));
+
+        self::assertSame(AddressSyntaxPreferenceReason::EXPLICIT_ADDRESS_DETAIL_MARKER, $parsed->syntaxPreference?->reason);
+        self::assertSame($street, $parsed->syntaxPreference?->preferredCandidate?->streetName);
+        self::assertSame($number, $parsed->syntaxPreference?->preferredCandidate?->houseNumber?->number);
+        self::assertSame($details, $parsed->syntaxPreference?->preferredCandidate?->trailingInformation);
+    }
+
+    public static function explicitDetailMarkerExamples(): iterable
+    {
+        yield 'Grifo slash INT' => ['VIA DEL GRIFO 4/INT 8', 'VIA DEL GRIFO', '4', '/INT 8'];
+        yield 'Pietrella slash INT' => ['VIA MARIO PIETRELLA 13/INT 11', 'VIA MARIO PIETRELLA', '13', '/INT 11'];
+        yield 'Battisti separated INT dot' => ['VIA CESARE BATTISTI 103 INT. 29', 'VIA CESARE BATTISTI', '103', 'INT. 29'];
+        yield 'real slash INT with civic one digit and two digit detail' => ['VIA GUIDO ROSSA 1/INT 21', 'VIA GUIDO ROSSA', '1', '/INT 21'];
+        yield 'real separated INT with location tail' => ['VIA GEN. CADORNA 3 INT. 4 - LOC. CASONI', 'VIA GEN. CADORNA', '3', 'INT. 4 - LOC. CASONI'];
+        yield 'real slash INTERNO' => ['VIA SCUOLE 8/INTERNO 3', 'VIA SCUOLE', '8', '/INTERNO 3'];
+        yield 'real spaced slash suffix then INT' => ['VIA GORIZIA 19/A INT. 6', 'VIA GORIZIA', '19', '/A INT. 6'];
+        yield 'real spaced slash suffix then INT with full tail' => ['VIA ROMA 119/A INT. 3', 'VIA ROMA', '119', '/A INT. 3'];
+        yield 'real slash letter suffix then INT' => ['VIA FORNACE 47/C INT 4', 'VIA FORNACE', '47', '/C INT 4'];
+        yield 'real slash suffix and opaque tail' => ['VIA BELVEDERE 11/B INT 3', 'VIA BELVEDERE', '11', '/B INT 3'];
+        yield 'real slash INT with detail above ten' => ['VIA VIVALDI 16/INT 20', 'VIA VIVALDI', '16', '/INT 20'];
+        yield 'opaque content after marker is retained' => ['VIA ROMA 12/INT 3 A', 'VIA ROMA', '12', '/INT 3 A'];
+        yield 'extra whitespace remains in original tail' => ['VIA ROMA 12  INT.  3', 'VIA ROMA', '12', 'INT.  3'];
+    }
+
+    public function testExplicitDetailMarkerDoesNotCreatePlausibilityForNumericStreetName(): void
+    {
+        $parsed = (new AddressParser())->parse(new AddressInput('VIA SETTEMBRE 1944 24/INT 2', null, null, null));
+
+        self::assertNull($parsed->syntaxPreference?->preferredCandidate);
+        self::assertSame(AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS, $parsed->syntaxPreference?->reason);
+    }
+
+    public function testExplicitDetailPreferenceDoesNotChangeParserCandidatesOrTheirOrder(): void
+    {
+        $parsed = (new AddressParser())->parse(new AddressInput('VIA DEL GRIFO 4/INT 8', null, null, null));
+
+        self::assertCount(3, $parsed->candidates);
+        self::assertSame(['VIA DEL GRIFO 4/INT 8||', 'VIA DEL GRIFO|4|/INT 8', 'VIA DEL GRIFO 4/INT|8|'], array_map(
+            static fn (AddressCandidate $candidate): string => $candidate->streetName . '|' . ($candidate->houseNumber?->number ?? '') . '|' . $candidate->trailingInformation,
+            $parsed->candidates,
+        ));
+        self::assertSame($parsed->candidates[1], $parsed->syntaxPreference?->preferredCandidate);
     }
 
     public function testCandidateOrderDoesNotDeterminePreferenceAndNoCandidateIsRemoved(): void

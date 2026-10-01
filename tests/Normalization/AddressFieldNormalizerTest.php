@@ -477,12 +477,21 @@ final class AddressFieldNormalizerTest extends TestCase
         }
     }
 
-    public function testTerritorialComplexNumericInputsRemainAmbiguousWhenPreferenceEvaluatorAbstains(): void
+    public function testTerritorialComplexNumericInputsOnlyNormalizeWhenExplicitMarkerSupportsTheBoundary(): void
     {
+        $grifo = (new AddressFieldNormalizer())->normalize(
+            new AddressInput('VIA DEL GRIFO 4/INT 8', null, 'Olbia', 'SS'),
+            $this->territorialResolution([]),
+        );
+        self::assertSame(AddressSyntaxPreferenceReason::EXPLICIT_ADDRESS_DETAIL_MARKER, $grifo->syntaxPreference?->reason);
+        self::assertSame('VIA DEL GRIFO', $grifo->street->normalizedValue);
+        self::assertSame('4', $grifo->houseNumber->normalizedValue);
+        self::assertSame('/INT 8', $grifo->civicDetails->normalizedValue);
+
         foreach ([
-            'VIA DEL GRIFO 4/INT 8',
             'VIA SARDEGNA 12/B 15',
             'VIA CADORE A3 INT. 3',
+            'VIA SETTEMBRE 1944 24/INT 2',
         ] as $source) {
             $input = new AddressInput($source, null, 'Olbia', 'SS');
             $result = (new AddressFieldNormalizer())->normalize($input, $this->territorialResolution([]));

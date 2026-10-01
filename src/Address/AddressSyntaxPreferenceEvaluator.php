@@ -15,7 +15,12 @@ final class AddressSyntaxPreferenceEvaluator
             return $existingPreference;
         }
 
-        return $this->preferRecognizedStreetDate($source, $candidates) ?? $existingPreference;
+        $streetDatePreference = $this->preferRecognizedStreetDate($source, $candidates);
+        if ($streetDatePreference !== null) {
+            return $streetDatePreference;
+        }
+
+        return $this->preferExplicitAddressDetailMarker($candidates) ?? $existingPreference;
     }
 
     /** @param list<AddressCandidate> $candidates */
@@ -77,11 +82,7 @@ final class AddressSyntaxPreferenceEvaluator
             return new AddressSyntaxPreference(null, AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS);
         }
 
-        $tokens = preg_split('/\\s+/u', $streetName, -1, PREG_SPLIT_NO_EMPTY) ?: [];
-        if (count($tokens) < 2 || preg_match(
-            '/\\A(?:VIA|V\\.?|VIALE|V\\.?LE|PIAZZA|P\\.?ZZA|CORSO|C\\.?SO|LARGO|STRADA|S\\.?S\\.?|SS)\\z/iu',
-            implode(' ', $tokens),
-        ) === 1) {
+        if (!$this->isPlausibleStreetName($streetName)) {
             return new AddressSyntaxPreference(null, AddressSyntaxPreferenceReason::INCOMPLETE_STREET_NAME);
         }
 
@@ -190,6 +191,54 @@ final class AddressSyntaxPreferenceEvaluator
         }
 
         return new AddressSyntaxPreference($matchingCivics[0], AddressSyntaxPreferenceReason::NUMERIC_STREET_DATE);
+    }
+
+    /** @param list<AddressCandidate> $candidates */
+    private function preferExplicitAddressDetailMarker(array $candidates): ?AddressSyntaxPreference
+    {
+        $matches = [];
+        foreach ($candidates as $candidate) {
+            if ($candidate->houseNumber === null || !$this->isPlausibleStreetName($candidate->streetName)) {
+                continue;
+            }
+
+            // Numeric street names keep their ambiguity: a detail marker alone must
+            // not decide whether an earlier number belongs to the toponym.
+            if (preg_match('/\d/u', $candidate->streetName) === 1) {
+                continue;
+            }
+
+            if (preg_match(
+                '/\A\s*(?:\/[[:alpha:]][[:space:]]+)?(?:\/\s*)?(?:INT(?:\.)?|INTERNO)\b/iu',
+                $candidate->trailingInformation,
+            ) !== 1) {
+                continue;
+            }
+
+            $matches[] = $candidate;
+        }
+
+        if (count($matches) !== 1) {
+            return null;
+        }
+
+        return new AddressSyntaxPreference(
+            $matches[0],
+            AddressSyntaxPreferenceReason::EXPLICIT_ADDRESS_DETAIL_MARKER,
+        );
+    }
+
+    private function isPlausibleStreetName(string $streetName): bool
+    {
+        $tokens = preg_split('/\s+/u', trim($streetName), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        if (count($tokens) < 2) {
+            return false;
+        }
+
+        return preg_match(
+            '/\A(?:VIA|V\.?|VIALE|V\.?LE|PIAZZA|P\.?ZZA|CORSO|C\.?SO|LARGO|STRADA|S\.?S\.?|SS)\z/iu',
+            implode(' ', $tokens),
+        ) !== 1;
     }
 
     private function endsWithRecognizedDate(string $streetName, string $datePattern): bool

@@ -19,6 +19,7 @@ final readonly class AddressSyntaxPreference
             AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX,
             AddressSyntaxPreferenceReason::FINAL_CIVIC_AFTER_NUMBERED_STATE_ROAD,
             AddressSyntaxPreferenceReason::NUMERIC_STREET_DATE,
+            AddressSyntaxPreferenceReason::EXPLICIT_ADDRESS_DETAIL_MARKER,
         ], true);
         if ($isPreferenceReason !== ($preferredCandidate !== null)) {
             throw new InvalidArgumentException('A preferred candidate and its reason must be provided together.');
