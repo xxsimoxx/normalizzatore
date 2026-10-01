@@ -52,6 +52,15 @@ Eseguire `bin/normalizzatore normalize input.csv output.csv [--delimiter=";"]`. 
 
 Le colonne dei campi normalizzati sono valorizzate per stati `CONFIRMED`, `SYNTAX_NORMALIZED` e `DIRECTORY_CORRECTION`; campi ambigui, non verificabili o mancanti restano vuoti. `SYNTAX_NORMALIZED` indica che il parser ha determinato con sufficiente affidabilità la forma del campo, ma non implica conferma della directory. `CONFIRMED` conserva evidenza repertoriale concordante e `DIRECTORY_CORRECTION` una proposta sostenuta dal repertorio. La separazione strutturale di via e civico non è una correzione suggerita. `cap_normalizzato` deriva esclusivamente da una risoluzione `RESOLVED`, senza fallback al CAP sorgente. `stato_risoluzione` e `verifica_cap` riportano i nomi degli enum. `correzioni_suggerite` serializza soltanto correzioni tipizzate di CAP e campi; i valori sono racchiusi tra virgolette e i caratteri delimitanti interni sono sottoposti a escaping. `diagnostica` conserva il codice e il contesto di origine in ordine stabile. Al termine, il comando stampa un breve riepilogo con righe elaborate, risolte, ambigue, non risolte, righe con correzioni e tempo totale.
 
+Le applicazioni PHP possono includere `lib/normalizza.php` e chiamare la funzione globale `normalizza($address, $cap, $citta, $provincia, $fuzzy = false)`. Restituisce le stesse dieci colonne aggiunte dalla CLI come array associativo. Il parametro `$fuzzy` è riservato: passare `true` genera una `LogicException` finché la modalità fuzzy non sarà disponibile.
+
+```php
+require_once '/path/to/normalizzatore/lib/normalizza.php';
+
+$result = normalizza('VIA DEL GRIFO 4/INT 8', '36071', 'ARZIGNANO', 'VI');
+echo $result['via_normalizzata'];
+```
+
 Quando il parser produce interpretazioni concorrenti, la preferenza sintattica può riconoscere date toponomastiche delimitate (giorno, mese italiano completo e anno opzionale): per esempio `VIA XXVII APRILE 1945 43` può preferire `VIA XXVII APRILE 1945` con civico `43`. Un marker esplicito `INT`, `INT.` o `INTERNO` dopo un civico plausibile può preferire quel confine, mantenendo tutta la coda opaca nei dettagli: `VIA DEL GRIFO 4/INT 8` diventa `VIA DEL GRIFO | 4 | /INT 8`. I candidati alternativi restano conservati; pattern incompleti o confini numerici dubbi restano ambigui.
 
 ## Città capizzate

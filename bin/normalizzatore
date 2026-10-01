@@ -5,22 +5,13 @@ declare(strict_types=1);
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-use Normalizzatore\Address\AddressParser;
-use Normalizzatore\Address\AddressStrategyClassifier;
-use Normalizzatore\Application\AddressProcessor;
-use Normalizzatore\City\CapizzatedCityCatalog;
+use Normalizzatore\Application\AddressProcessorFactory;
 use Normalizzatore\Csv\AddressProcessingResultSerializer;
 use Normalizzatore\Csv\CsvHeaderMap;
 use Normalizzatore\Csv\CsvNormalizationPipeline;
 use Normalizzatore\Csv\CsvReader;
 use Normalizzatore\Csv\CsvWriter;
 use Normalizzatore\Csv\NormalizeArguments;
-use Normalizzatore\Directory\SqliteAddressDirectory;
-use Normalizzatore\Normalization\AddressFieldNormalizer;
-use Normalizzatore\Resolution\AddressResolutionOrchestrator;
-use Normalizzatore\Resolution\CapResolver;
-use Normalizzatore\Resolution\TerritorialResolver;
-use Normalizzatore\Verification\SourceCapVerifier;
 
 if (($argv[1] ?? null) !== 'normalize') {
     fwrite(STDERR, "Usage: bin/normalizzatore normalize input.csv output.csv [--delimiter=\";\"]\n");
@@ -38,16 +29,7 @@ try {
     }
     $inputCsv = (new CsvReader())->open($options->inputPath, $options->delimiter);
     CsvHeaderMap::fromHeader($inputCsv->header, AddressProcessingResultSerializer::OUTPUT_COLUMNS);
-    $catalog = CapizzatedCityCatalog::fromTsvFile($root . '/resources/capizzated-cities.tsv');
-    $directory = new SqliteAddressDirectory($root . '/var/archi_cap.sqlite');
-    $orchestrator = new AddressResolutionOrchestrator(
-        new AddressStrategyClassifier($catalog),
-        new AddressParser(),
-        $directory,
-        new CapResolver(),
-        new TerritorialResolver(),
-    );
-    $processor = new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());
+    $processor = AddressProcessorFactory::create($root);
     $pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
     $summary = $pipeline->run($options->inputPath, $options->outputPath, $options->delimiter);
     fwrite(STDOUT, $summary->toText());
