@@ -64,6 +64,82 @@ final class AddressSyntaxPreferenceEvaluatorTest extends TestCase
         yield 'multiple civic and detail numbers' => ['VIA CAPITELLO DI SOTTO 4/P S 1 T L 4', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'complex abbreviated civic details' => ['VIALE MILANO 86/P 4 I 11', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
         yield 'terminal number follows internal marker' => ['VIA CADORE A3 INT. 3', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'date without day' => ['VIA MAGGIO 1848 24', AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
+        yield 'date marker cannot cross slash' => ['VIA VICOLO 5/MAGGIO 1848 5', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'abbreviated year is not a date' => ["VIA RAGAZZI DEL ' 99 5", AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
+        yield 'date civic exceeds conservative bound' => ['VIA 4 NOVEMBRE 1470', AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
+        yield 'day month with numeric detail is ambiguous' => ['VIA 18 GIUGNO 149/6', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'date and complex internal tail' => ['VIA SETTEMBRE 1944 24/INT 2', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'complex internal tail remains outside date rule' => ['VIA DEL GRIFO 4/INT 8', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'slash suffix and following number remain complex' => ['VIA ENRICO TOTI 59/C 8', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'lettered slash suffix and following number remain complex' => ['VIA SAN MAIOLO 5/P 1', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'month and year without day remain ambiguous' => ['VIA NOVEMBRE 1918 23/15', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'Arabic day outside calendar range' => ['VIA 32 MAGGIO 1944 6', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'non-canonical Roman day' => ['VIA IIX MAGGIO 1944 6', AddressSyntaxPreferenceReason::AMBIGUOUS_NUMERIC_BOUNDARY];
+        yield 'year above supported range' => ['VIA 21 OTTOBRE 2100 4', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+        yield 'year below supported range' => ['VIA 21 OTTOBRE 1799 4', AddressSyntaxPreferenceReason::COMPLEX_CIVIC_DETAILS];
+    }
+
+    #[DataProvider('streetDateExamples')]
+    public function testPrefersExplicitDayMonthStreetDate(string $source, ?string $street, ?string $number, string $details): void
+    {
+        $parsed = (new AddressParser())->parse(new AddressInput($source, null, null, null));
+
+        self::assertSame(AddressSyntaxPreferenceReason::NUMERIC_STREET_DATE, $parsed->syntaxPreference?->reason);
+        self::assertNotNull($parsed->syntaxPreference?->preferredCandidate);
+        self::assertSame($street, $parsed->syntaxPreference->preferredCandidate->streetName);
+        self::assertSame($number, $parsed->syntaxPreference->preferredCandidate->houseNumber?->number);
+        self::assertSame($details, $parsed->syntaxPreference->preferredCandidate->trailingInformation);
+        self::assertContains($parsed->syntaxPreference->preferredCandidate, $parsed->candidates);
+    }
+
+    public static function streetDateExamples(): iterable
+    {
+        yield 'Arabic day and month without civic' => ['VIA 11 SETTEMBRE', 'VIA 11 SETTEMBRE', null, ''];
+        yield 'day and month without civic' => ['VIA 19 LUGLIO', 'VIA 19 LUGLIO', null, ''];
+        yield 'square day and month without civic' => ['PIAZZA 24 MAGGIO', 'PIAZZA 24 MAGGIO', null, ''];
+        yield 'Roman day month year and civic' => ['VIA XXVII APRILE 1945 43', 'VIA XXVII APRILE 1945', '43', ''];
+        yield 'Arabic day month year and civic' => ['VIA 21 OTTOBRE 1866 4', 'VIA 21 OTTOBRE 1866', '4', ''];
+        yield 'Roman day month year and suffixed civic' => ['VIA XIV MAGGIO 1944 6/B', 'VIA XIV MAGGIO 1944', '6', '/B'];
+        yield 'Arabic day month year and civic in Viale' => ['VIALE 14 AGOSTO 1866 31', 'VIALE 14 AGOSTO 1866', '31', ''];
+    }
+
+    public function testDatePreferenceLeavesParserCandidateSetAndOrderUnchanged(): void
+    {
+        $parsed = (new AddressParser())->parse(new AddressInput('VIA XXVII APRILE 1945 43', null, null, null));
+
+        self::assertCount(3, $parsed->candidates);
+        self::assertSame('VIA XXVII APRILE 1945 43', $parsed->candidates[0]->streetName);
+        self::assertSame('VIA XXVII APRILE', $parsed->candidates[1]->streetName);
+        self::assertSame('1945', $parsed->candidates[1]->houseNumber?->number);
+        self::assertSame('VIA XXVII APRILE 1945', $parsed->candidates[2]->streetName);
+        self::assertSame('43', $parsed->candidates[2]->houseNumber?->number);
+        self::assertSame($parsed->candidates[2], $parsed->syntaxPreference?->preferredCandidate);
+    }
+
+    #[DataProvider('stableDateRelatedExamples')]
+    public function testExistingDateRelatedPreferencesRemainUnchanged(string $source, AddressSyntaxPreferenceReason $reason, string $street, string $number, string $details): void
+    {
+        $parsed = (new AddressParser())->parse(new AddressInput($source, null, null, null));
+
+        self::assertSame($reason, $parsed->syntaxPreference?->reason);
+        self::assertSame($street, $parsed->syntaxPreference?->preferredCandidate?->streetName);
+        self::assertSame($number, $parsed->syntaxPreference?->preferredCandidate?->houseNumber?->number);
+        self::assertSame($details, $parsed->syntaxPreference?->preferredCandidate?->trailingInformation);
+    }
+
+    public static function stableDateRelatedExamples(): iterable
+    {
+        yield 'four November with suffix' => ['VIA 4 NOVEMBRE 14 A', AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, 'VIA 4 NOVEMBRE', '14', 'A'];
+        yield 'twenty fifth April' => ['VIA XXV APRILE 146', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA XXV APRILE', '146', ''];
+        yield 'second June' => ['VIA 2 GIUGNO 25', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA 2 GIUGNO', '25', ''];
+        yield 'twenty seventh April' => ['VIA XXVII APRILE 21', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA XXVII APRILE', '21', ''];
+        yield 'fourth November' => ['VIA IV NOVEMBRE 15', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA IV NOVEMBRE', '15', ''];
+        yield 'first May' => ['VIA PRIMO MAGGIO 12', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA PRIMO MAGGIO', '12', ''];
+        yield 'Roro slash number' => ['VIA RORO 2/2', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA RORO', '2', '/2'];
+        yield 'Roman fifth May' => ['VIA V MAGGIO 32/C', AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, 'VIA V MAGGIO', '32', '/C'];
+        yield 'twenty fifth April with civic suffix' => ['PIAZZA XXV APRILE 26 B', AddressSyntaxPreferenceReason::FINAL_CIVIC_WITH_SUFFIX, 'PIAZZA XXV APRILE', '26', 'B'];
+        yield 'four November civic fifty five' => ['VIA 4 NOVEMBRE 55', AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER, 'VIA 4 NOVEMBRE', '55', ''];
     }
 
     public function testCandidateOrderDoesNotDeterminePreferenceAndNoCandidateIsRemoved(): void

@@ -10,6 +10,17 @@ final class AddressSyntaxPreferenceEvaluator
     /** @param list<AddressCandidate> $candidates */
     public function evaluate(string $source, array $candidates): AddressSyntaxPreference
     {
+        $existingPreference = $this->evaluateExistingRules($source, $candidates);
+        if ($existingPreference->hasPreferredCandidate()) {
+            return $existingPreference;
+        }
+
+        return $this->preferRecognizedStreetDate($source, $candidates) ?? $existingPreference;
+    }
+
+    /** @param list<AddressCandidate> $candidates */
+    private function evaluateExistingRules(string $source, array $candidates): AddressSyntaxPreference
+    {
         if ($candidates === []) {
             return new AddressSyntaxPreference(null, AddressSyntaxPreferenceReason::NO_CANDIDATES);
         }
@@ -128,6 +139,96 @@ final class AddressSyntaxPreferenceEvaluator
         }
 
         return new AddressSyntaxPreference($preferred, AddressSyntaxPreferenceReason::FINAL_CIVIC_NUMBER);
+    }
+
+    /** @param list<AddressCandidate> $candidates */
+    private function preferRecognizedStreetDate(string $source, array $candidates): ?AddressSyntaxPreference
+    {
+        // This rule only breaks an existing parser tie; it does not annotate a
+        // single-candidate parse that already has no competing interpretation.
+        if (count($candidates) < 2) {
+            return null;
+        }
+
+        $normalized = (new AddressSyntaxNormalizer())->normalize($source);
+        $month = '(?:GENNAIO|FEBBRAIO|MARZO|APRILE|MAGGIO|GIUGNO|LUGLIO|AGOSTO|SETTEMBRE|OTTOBRE|NOVEMBRE|DICEMBRE)';
+        $day = '(?<day>PRIMO|[0-9]{1,2}|[IVXLCDM]+)';
+        $datePattern = '/(?:^|\\s)' . $day . '\\s+' . $month . '(?:\\s+(?<year>18[0-9]{2}|19[0-9]{2}|20[0-9]{2}))?\\z/iu';
+
+        // A terminal day-month[-year] is a complete street-name ending, not a civic.
+        foreach ($candidates as $candidate) {
+            if ($candidate->houseNumber === null
+                && $candidate->trailingInformation === ''
+                && $candidate->streetName !== ''
+                && $this->endsWithRecognizedDate($candidate->streetName, $datePattern)
+                && trim($candidate->streetName) === trim($normalized)) {
+                return new AddressSyntaxPreference($candidate, AddressSyntaxPreferenceReason::NUMERIC_STREET_DATE);
+            }
+        }
+
+        // A following civic must be 1..999; this bounds the interpretation and avoids
+        // treating a large terminal value (for example 1470) as an address number.
+        $matchingCivics = [];
+        foreach ($candidates as $candidate) {
+            $number = $candidate->houseNumber?->number;
+            if ($number === null || preg_match('/\\A[0-9]{1,3}\\z/', $number) !== 1 || (int) $number === 0) {
+                continue;
+            }
+            if (!$this->endsWithRecognizedDate($candidate->streetName, $datePattern)) {
+                continue;
+            }
+            if ($candidate->trailingInformation !== ''
+                && preg_match('/\\A(?:[[:space:]]*[A-Za-z]|\\/[A-Za-z])\\z/u', $candidate->trailingInformation) !== 1) {
+                continue;
+            }
+
+            $matchingCivics[] = $candidate;
+        }
+
+        if (count($matchingCivics) !== 1) {
+            return null;
+        }
+
+        return new AddressSyntaxPreference($matchingCivics[0], AddressSyntaxPreferenceReason::NUMERIC_STREET_DATE);
+    }
+
+    private function endsWithRecognizedDate(string $streetName, string $datePattern): bool
+    {
+        if (preg_match($datePattern, $streetName, $matches) !== 1) {
+            return false;
+        }
+
+        $day = mb_strtoupper($matches['day'], 'UTF-8');
+        if ($day === 'PRIMO') {
+            return true;
+        }
+        if (ctype_digit($day)) {
+            return (int) $day >= 1 && (int) $day <= 31;
+        }
+
+        for ($value = 1; $value <= 31; ++$value) {
+            if ($day === $this->romanDay($value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function romanDay(int $value): string
+    {
+        $numerals = [
+            10 => 'X', 9 => 'IX', 5 => 'V', 4 => 'IV', 1 => 'I',
+        ];
+        $result = '';
+        foreach ($numerals as $amount => $numeral) {
+            while ($value >= $amount) {
+                $result .= $numeral;
+                $value -= $amount;
+            }
+        }
+
+        return $result;
     }
 
     private static function collapseWhitespace(string $value): string
