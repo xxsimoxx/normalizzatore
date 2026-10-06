@@ -44,6 +44,8 @@ final class SqliteAddressDirectoryTest extends TestCase
             SqliteDirectoryFixture::row('PIAZZA MONDOVI`', '89816', 'CESSANITI', 'VV', 'T', '', ''),
             SqliteDirectoryFixture::row("VICOLO DELL'OSPEDALE", '53049', 'TORRITA DI SIENA', 'SI', 'T', '', ''),
             SqliteDirectoryFixture::row('VICOLO DELL`OSPEDALE', '53049', 'TORRITA DI SIENA', 'SI', 'T', '', ''),
+            SqliteDirectoryFixture::row('VIA CITTÀ', '09000', 'Alà', 'SS', 'T', '', ''),
+            SqliteDirectoryFixture::row('VIA DECOMPOSTA CITTA' . "\u{0300}", '09001', 'Città', 'CT', 'T', '', ''),
         ]);
     }
 
@@ -93,6 +95,17 @@ final class SqliteAddressDirectoryTest extends TestCase
 
         self::assertCount(2, $directory->findByStreetCityProvince("PIAZZA MONDOVI'", 'CESSANITI', 'VV'));
         self::assertCount(2, $directory->findByStreetCityProvince("VICOLO DELL'OSPEDALE", 'TORRITA DI SIENA', 'SI'));
+    }
+
+    public function testCanonicalStreetTempUsesTheOfficialOrthographyNormalizer(): void
+    {
+        $directory = new SqliteAddressDirectory($this->database);
+        $normalizer = new \Normalizzatore\Directory\DirectoryKeyNormalizer();
+
+        self::assertSame($normalizer->normalize('VIA CITTÀ'), $normalizer->normalize("via citta'"));
+        self::assertCount(1, $directory->findByStreetCityProvince("via citta'", "ala'", 'ss'));
+        self::assertCount(1, $directory->findByStreetCityProvince("VIA DECOMPOSTA CITTA'", "CITTA\u{0300}", 'ct'));
+        self::assertSame([], $directory->findByStreetCityProvince("VIA DECOMPOSTA CITTA'", "CITTA\u{0300}", 'wrong'));
     }
 
     public function testCanonicalTerritorialLookupFindsAccentEquivalentCityAndPreservesSpellings(): void
