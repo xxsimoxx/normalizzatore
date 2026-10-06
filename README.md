@@ -63,6 +63,8 @@ echo $result['via_normalizzata'];
 
 Quando il parser produce interpretazioni concorrenti, la preferenza sintattica può riconoscere date toponomastiche delimitate (giorno, mese italiano completo e anno opzionale): per esempio `VIA XXVII APRILE 1945 43` può preferire `VIA XXVII APRILE 1945` con civico `43`. Un marker esplicito `INT`, `INT.` o `INTERNO` dopo un civico plausibile può preferire quel confine, mantenendo tutta la coda opaca nei dettagli: `VIA DEL GRIFO 4/INT 8` diventa `VIA DEL GRIFO | 4 | /INT 8`. I candidati alternativi restano conservati; pattern incompleti o confini numerici dubbi restano ambigui.
 
+Il dominio fuzzy interno include un tokenizer del nome stradale, l'espansione conservativa di una singola iniziale puntata e il confronto typo OSA di un solo token. È una base sperimentale non collegata alla directory, alla CLI, alla pipeline CSV o all'API pubblica: non risolve indirizzi né CAP. L'integrazione opt-in verrà sviluppata in uno step successivo; fino ad allora `normalizza(..., true)` continua a generare un'eccezione.
+
 ## Città capizzate
 
 The catalog in `resources/capizzated-cities.tsv` contains the 42 capizzated cities. Membership depends only on the city name, compared after trimming, collapsing whitespace, Unicode uppercasing, and the explicit Italian accent/apostrophe equivalences described below; it does not add aliases. The province in the source list is metadata only. MESTRE and VENEZIA remain separate entries. `AddressStrategyClassifier` classifies an input as STREET_BASED or TERRITORIAL; the orchestrator executes the corresponding existing resolution path.
