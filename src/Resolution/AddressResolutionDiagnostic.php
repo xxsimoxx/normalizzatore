@@ -15,4 +15,12 @@ enum AddressResolutionDiagnostic: string
     case SPECIAL_CAP_PRESENT = 'special_cap_present';
     case NO_ADDRESS_CANDIDATES = 'no_address_candidates';
     case EMPTY_ADDRESS_INPUT = 'empty_address_input';
+    case FUZZY_NOT_APPLICABLE = 'fuzzy_not_applicable';
+    case FUZZY_ABBREVIATION_MATCH = 'fuzzy_abbreviation_match';
+    case FUZZY_TYPO_MATCH = 'fuzzy_typo_match';
+    case FUZZY_AMBIGUOUS = 'fuzzy_ambiguous';
+    case FUZZY_NO_MATCH = 'fuzzy_no_match';
+    case FUZZY_PROVINCE_CONFLICT = 'fuzzy_province_conflict';
+    case FUZZY_AMBIGUOUS_LOCALITY = 'fuzzy_ambiguous_locality';
+    case FUZZY_NO_LOCALITY = 'fuzzy_no_locality';
 }

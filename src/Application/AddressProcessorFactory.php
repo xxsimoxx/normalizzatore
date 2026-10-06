@@ -8,6 +8,7 @@ use Normalizzatore\Address\AddressParser;
 use Normalizzatore\Address\AddressStrategyClassifier;
 use Normalizzatore\City\CapizzatedCityCatalog;
 use Normalizzatore\Directory\SqliteAddressDirectory;
+use Normalizzatore\Resolution\FuzzyStreetMatcher;
 use Normalizzatore\Normalization\AddressFieldNormalizer;
 use Normalizzatore\Resolution\AddressResolutionOrchestrator;
 use Normalizzatore\Resolution\CapResolver;
@@ -28,6 +29,8 @@ final class AddressProcessorFactory
             $directory,
             new CapResolver(),
             new TerritorialResolver(),
+            $directory,
+            new FuzzyStreetMatcher(),
         );
 
         return new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());

@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace Normalizzatore\Resolution;
 
 use InvalidArgumentException;
+use LogicException;
+use Normalizzatore\Address\AddressCandidate;
 use Normalizzatore\Address\AddressInput;
 use Normalizzatore\Address\AddressResolutionStrategy;
 use Normalizzatore\Address\AddressStrategyClassifier;
 use Normalizzatore\Address\AddressParser;
+use Normalizzatore\Address\StreetNameTokenizer;
 use Normalizzatore\Directory\AddressDirectoryInterface;
+use Normalizzatore\Directory\FuzzyStreetCandidateProvider;
+use Normalizzatore\Directory\FuzzyStreetCandidateSetStatus;
 
 /** Coordinates the existing territorial and street-based resolution components. */
 final readonly class AddressResolutionOrchestrator
@@ -20,10 +25,13 @@ final readonly class AddressResolutionOrchestrator
         private AddressDirectoryInterface $directory,
         private CapResolver $capResolver,
         private TerritorialResolver $territorialResolver,
+        private ?FuzzyStreetCandidateProvider $fuzzyCandidateProvider = null,
+        private FuzzyStreetMatcher $fuzzyStreetMatcher = new FuzzyStreetMatcher(),
+        private StreetNameTokenizer $streetNameTokenizer = new StreetNameTokenizer(),
     ) {
     }
 
-    public function resolve(AddressInput $input): AddressResolution
+    public function resolve(AddressInput $input, bool $fuzzy = false): AddressResolution
     {
         $strategy = $this->strategyClassifier->classify($input);
 
@@ -68,7 +76,125 @@ final readonly class AddressResolutionOrchestrator
             );
         }
 
-        return $this->streetResult($candidateResolutions);
+        if (!$fuzzy || $this->hasDirectoryEvidence($candidateResolutions)) {
+            return $this->streetResult($candidateResolutions);
+        }
+
+        $selected = $this->selectFuzzyParserCandidate($parsedAddress->candidates, $parsedAddress->syntaxPreference?->preferredCandidate);
+        if ($selected === null) {
+            return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
+                AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
+            ));
+        }
+
+        $sourceStreet = $this->streetNameTokenizer->tokenize($selected->streetName);
+        if ($sourceStreet === null) {
+            return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
+                AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
+                parserCandidate: $selected,
+            ));
+        }
+        if ($this->fuzzyCandidateProvider === null) {
+            throw new LogicException('Fuzzy street candidate provider is not configured.');
+        }
+
+        $candidateSet = $this->fuzzyCandidateProvider->findCandidates(new FuzzyStreetCandidateQuery(
+            $input->city ?? '',
+            $input->province ?? '',
+            $sourceStreet,
+        ));
+        if ($candidateSet->status !== FuzzyStreetCandidateSetStatus::AVAILABLE) {
+            $diagnostic = match ($candidateSet->status) {
+                FuzzyStreetCandidateSetStatus::NO_LOCALITY => AddressResolutionDiagnostic::FUZZY_NO_LOCALITY,
+                FuzzyStreetCandidateSetStatus::PROVINCE_CONFLICT => AddressResolutionDiagnostic::FUZZY_PROVINCE_CONFLICT,
+                FuzzyStreetCandidateSetStatus::AMBIGUOUS_LOCALITY => AddressResolutionDiagnostic::FUZZY_AMBIGUOUS_LOCALITY,
+                FuzzyStreetCandidateSetStatus::AVAILABLE => throw new LogicException('Unreachable fuzzy candidate-set status.'),
+            };
+
+            return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
+                $diagnostic,
+                $selected,
+                $candidateSet,
+            ));
+        }
+
+        $fuzzyResolution = $this->fuzzyStreetMatcher->match($sourceStreet, $candidateSet->candidates);
+        if ($fuzzyResolution->status !== FuzzyStreetResolutionStatus::MATCH) {
+            $diagnostic = match ($fuzzyResolution->status) {
+                FuzzyStreetResolutionStatus::AMBIGUOUS => AddressResolutionDiagnostic::FUZZY_AMBIGUOUS,
+                FuzzyStreetResolutionStatus::NO_MATCH => AddressResolutionDiagnostic::FUZZY_NO_MATCH,
+                FuzzyStreetResolutionStatus::NOT_APPLICABLE => AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
+                FuzzyStreetResolutionStatus::MATCH => throw new LogicException('Unreachable fuzzy match status.'),
+            };
+
+            return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
+                $diagnostic,
+                $selected,
+                $candidateSet,
+                $fuzzyResolution,
+            ));
+        }
+
+        $matchedCandidate = $fuzzyResolution->match?->candidate;
+        if ($matchedCandidate === null) {
+            throw new LogicException('A fuzzy MATCH must carry its selected street name.');
+        }
+        $entries = $this->fuzzyCandidateProvider->findEntries($candidateSet, new FuzzyStreetNameCandidate($matchedCandidate));
+        if ($entries === []) {
+            throw new LogicException('A selected fuzzy street name has no directory entries.');
+        }
+
+        $matchedResolution = new StreetCandidateResolution($selected, $entries, $this->capResolver->resolve($selected, $entries));
+        foreach ($candidateResolutions as $index => $candidateResolution) {
+            if ($this->sameCandidate($candidateResolution->candidate, $selected)) {
+                $candidateResolutions[$index] = $matchedResolution;
+                break;
+            }
+        }
+        $diagnostic = $fuzzyResolution->match->kind === FuzzyStreetMatchKind::ABBREVIATION
+            ? AddressResolutionDiagnostic::FUZZY_ABBREVIATION_MATCH
+            : AddressResolutionDiagnostic::FUZZY_TYPO_MATCH;
+
+        return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
+            $diagnostic,
+            $selected,
+            $candidateSet,
+            $fuzzyResolution,
+        ));
+    }
+
+    /** @param list<StreetCandidateResolution> $candidateResolutions */
+    private function hasDirectoryEvidence(array $candidateResolutions): bool
+    {
+        foreach ($candidateResolutions as $candidateResolution) {
+            if ($candidateResolution->directoryEntries !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param list<AddressCandidate> $candidates */
+    private function selectFuzzyParserCandidate(array $candidates, ?AddressCandidate $preferred): ?AddressCandidate
+    {
+        if (count($candidates) === 1) {
+            return $candidates[0];
+        }
+        if ($preferred === null) {
+            return null;
+        }
+
+        $matches = array_values(array_filter($candidates, fn ($candidate): bool => $this->sameCandidate($candidate, $preferred)));
+
+        return count($matches) === 1 ? $matches[0] : null;
+    }
+
+    private function sameCandidate(AddressCandidate $left, AddressCandidate $right): bool
+    {
+        return $left->streetName === $right->streetName
+            && $left->houseNumber?->number === $right->houseNumber?->number
+            && $left->trailingInformation === $right->trailingInformation;
     }
 
     private function territorialResult(TerritorialResolution $resolution): AddressResolution
@@ -99,12 +225,17 @@ final readonly class AddressResolutionOrchestrator
     }
 
     /** @param list<StreetCandidateResolution> $candidateResolutions */
-    private function streetResult(array $candidateResolutions): AddressResolution
+    private function streetResult(array $candidateResolutions, ?FuzzyStreetAddressEvidence $fuzzyEvidence = null): AddressResolution
     {
         if (!array_is_list($candidateResolutions)) {
             throw new InvalidArgumentException('Street candidate resolutions must be provided as a list.');
         }
         if ($candidateResolutions === []) {
+            $diagnostics = [AddressResolutionDiagnostic::NO_ADDRESS_CANDIDATES];
+            if ($fuzzyEvidence !== null) {
+                $diagnostics[] = $fuzzyEvidence->diagnostic;
+            }
+
             return new AddressResolution(
                 AddressResolutionStrategy::STREET_BASED,
                 AddressResolutionStatus::NO_MATCH,
@@ -112,7 +243,8 @@ final readonly class AddressResolutionOrchestrator
                 null,
                 null,
                 [],
-                [AddressResolutionDiagnostic::NO_ADDRESS_CANDIDATES],
+                $diagnostics,
+                $fuzzyEvidence,
             );
         }
 
@@ -144,6 +276,10 @@ final readonly class AddressResolutionOrchestrator
             if (in_array(CapResolutionDiagnostic::NON_ORDINARY_CAP, $resolution->diagnostics, true)) {
                 $diagnostics[AddressResolutionDiagnostic::SPECIAL_CAP_PRESENT->value] = AddressResolutionDiagnostic::SPECIAL_CAP_PRESENT;
             }
+        }
+
+        if ($fuzzyEvidence !== null) {
+            $diagnostics[$fuzzyEvidence->diagnostic->value] = $fuzzyEvidence->diagnostic;
         }
 
         $caps = array_values($candidateCaps);
@@ -185,6 +321,7 @@ final readonly class AddressResolutionOrchestrator
             null,
             $candidateResolutions,
             $this->orderedDiagnostics($diagnostics),
+            $fuzzyEvidence,
         );
     }
 

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Normalizzatore\Tests\Application;
 
-use LogicException;
 use Normalizzatore\Address\AddressInput;
 use Normalizzatore\Application\AddressProcessorFactory;
 use Normalizzatore\Csv\AddressProcessingResultSerializer;
@@ -64,12 +63,33 @@ final class NormalizzaApiTest extends TestCase
         }
     }
 
-    public function testFuzzyModeFailsClearlyInsteadOfSilentlyUsingDeterministicMode(): void
+    public function testFuzzyModeKeepsDeterministicExactMatchesAndUsesThePublicContract(): void
     {
-        $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('modalità fuzzy non è ancora disponibile');
+        $deterministic = normalizza('VIA DEL GRIFO 4/INT 8', '36071', 'ARZIGNANO', 'VI');
+        $fuzzyEnabled = normalizza('VIA DEL GRIFO 4/INT 8', '36071', 'ARZIGNANO', 'VI', true);
 
-        normalizza('VIA ROMA 1', '00100', 'ROMA', 'RM', true);
+        self::assertSame($deterministic, $fuzzyEnabled);
+        self::assertCount(10, $fuzzyEnabled);
+    }
+
+    public function testFuzzyModeCorrectsARealTypoOnlyAfterNormalDirectoryResolution(): void
+    {
+        $input = ['VIA CAPUCCINA 181/G', '30172', 'VENEZIA', 'VE'];
+        $deterministicBefore = normalizza(...$input);
+        $result = normalizza($input[0], $input[1], $input[2], $input[3], true);
+        $fuzzyAgain = normalizza($input[0], $input[1], $input[2], $input[3], true);
+        $deterministicAfter = normalizza(...$input);
+
+        self::assertSame($deterministicBefore, $deterministicAfter);
+        self::assertSame($result, $fuzzyAgain);
+        self::assertSame(AddressProcessingResultSerializer::OUTPUT_COLUMNS, array_keys($result));
+        self::assertSame('VIA CAPPUCCINA', $result['via_normalizzata']);
+        self::assertSame('181', $result['civico_normalizzato']);
+        self::assertSame('/G', $result['dettagli_normalizzati']);
+        self::assertSame('30172', $result['cap_normalizzato']);
+        self::assertSame('RESOLVED', $result['stato_risoluzione']);
+        self::assertStringContainsString('fuzzy_typo_correction', $result['correzioni_suggerite']);
+        self::assertStringContainsString('RESOLUTION:fuzzy_typo_match', $result['diagnostica']);
     }
 
     #[RunInSeparateProcess]

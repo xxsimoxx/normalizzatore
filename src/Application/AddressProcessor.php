@@ -19,9 +19,9 @@ final readonly class AddressProcessor
     ) {
     }
 
-    public function process(AddressInput $input): AddressProcessingResult
+    public function process(AddressInput $input, bool $fuzzy = false): AddressProcessingResult
     {
-        $resolution = $this->resolutionOrchestrator->resolve($input);
+        $resolution = $this->resolutionOrchestrator->resolve($input, $fuzzy);
         $capVerification = $this->sourceCapVerifier->verify($input->cap ?? '', $resolution);
         $fieldNormalization = $this->fieldNormalizer->normalize($input, $resolution);
 

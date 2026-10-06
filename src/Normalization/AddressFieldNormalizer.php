@@ -14,6 +14,9 @@ use Normalizzatore\Directory\DirectoryEntry;
 use Normalizzatore\Directory\DirectoryKeyNormalizer;
 use Normalizzatore\Directory\TerritorialEntry;
 use Normalizzatore\Resolution\AddressResolution;
+use Normalizzatore\Resolution\AddressResolutionDiagnostic;
+use Normalizzatore\Resolution\AddressResolutionStatus;
+use Normalizzatore\Resolution\FuzzyStreetMatchKind;
 use Normalizzatore\Resolution\StreetCandidateResolution;
 
 /** Produces conservative field values from an input and its existing resolution evidence. */
@@ -89,7 +92,7 @@ final readonly class AddressFieldNormalizer
             ? array_map(static fn (DirectoryEntry $entry): string => $entry->pr, $directoryEntries)
             : array_map(static fn (TerritorialEntry $entry): string => $entry->province, $territorialEntries);
 
-        $street = $this->parsedField(
+        $street = $this->fuzzyStreetCorrection($resolution) ?? $this->parsedField(
             NormalizedFieldName::STREET,
             array_map(static fn (array $item): string => $item['candidate']->streetName, $relevant),
             $input->vianum,
@@ -140,6 +143,46 @@ final readonly class AddressFieldNormalizer
             $province,
             $syntaxPreference,
             $parsedAddress,
+        );
+    }
+
+    private function fuzzyStreetCorrection(AddressResolution $resolution): ?NormalizedField
+    {
+        $evidence = $resolution->fuzzyStreetEvidence;
+        $match = $evidence?->nominalResolution?->match;
+        if ($resolution->status !== AddressResolutionStatus::RESOLVED
+            || $match === null
+            || $evidence?->parserCandidate === null
+            || !in_array($evidence->diagnostic, [
+                AddressResolutionDiagnostic::FUZZY_ABBREVIATION_MATCH,
+                AddressResolutionDiagnostic::FUZZY_TYPO_MATCH,
+            ], true)) {
+            return null;
+        }
+
+        $original = $evidence->parserCandidate->streetName;
+        $proposed = $match->candidate->canonicalName;
+        if ($original === $proposed) {
+            return null;
+        }
+        $reason = $match->kind === FuzzyStreetMatchKind::ABBREVIATION
+            ? FieldCorrectionReason::FUZZY_ABBREVIATION_EXPANSION
+            : FieldCorrectionReason::FUZZY_TYPO_CORRECTION;
+        $correction = new FieldCorrection(
+            NormalizedFieldName::STREET,
+            $original,
+            $proposed,
+            $reason,
+            NormalizationOrigin::DIRECTORY,
+        );
+
+        return new NormalizedField(
+            NormalizedFieldName::STREET,
+            $original,
+            $proposed,
+            NormalizationOrigin::DIRECTORY,
+            NormalizedFieldStatus::DIRECTORY_CORRECTION,
+            $correction,
         );
     }
 

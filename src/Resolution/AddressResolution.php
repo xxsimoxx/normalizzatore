@@ -23,6 +23,7 @@ final readonly class AddressResolution
         public ?TerritorialResolution $territorialResolution,
         public array $streetCandidateResolutions,
         public array $diagnostics,
+        public ?FuzzyStreetAddressEvidence $fuzzyStreetEvidence = null,
     ) {
         foreach ([$candidateCaps, $streetCandidateResolutions, $diagnostics] as $list) {
             if (!array_is_list($list)) {
@@ -53,6 +54,11 @@ final readonly class AddressResolution
         if (count(array_unique(array_map(static fn (AddressResolutionDiagnostic $item): string => $item->value, $diagnostics))) !== count($diagnostics)) {
             throw new InvalidArgumentException('Address resolution diagnostics must be unique.');
         }
+        if ($fuzzyStreetEvidence !== null
+            && ($strategy !== AddressResolutionStrategy::STREET_BASED
+                || !in_array($fuzzyStreetEvidence->diagnostic, $diagnostics, true))) {
+            throw new InvalidArgumentException('Fuzzy street evidence must belong to a street-based result and be exposed as a diagnostic.');
+        }
 
         if ($status === AddressResolutionStatus::RESOLVED
             && (count($candidateCaps) !== 1 || $resolvedCap !== $candidateCaps[0])) {
@@ -69,7 +75,7 @@ final readonly class AddressResolution
         }
 
         if ($strategy === AddressResolutionStrategy::TERRITORIAL
-            && ($territorialResolution === null || $streetCandidateResolutions !== [])) {
+            && ($territorialResolution === null || $streetCandidateResolutions !== [] || $fuzzyStreetEvidence !== null)) {
             throw new InvalidArgumentException('A territorial address result must preserve only territorial resolution evidence.');
         }
         if ($strategy === AddressResolutionStrategy::STREET_BASED && $territorialResolution !== null) {

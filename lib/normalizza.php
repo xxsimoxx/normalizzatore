@@ -9,15 +9,16 @@ use Normalizzatore\Application\AddressProcessorFactory;
 use Normalizzatore\Csv\AddressProcessingResultSerializer;
 
 /**
- * Deterministically normalizes one address using the same processing and output
- * contract as the CSV command.
+ * Normalizes one address using the same processing and output contract as the CSV command.
  *
  * @param string $address Original address text (the `vianum` value).
  * @param string $cap Original source CAP; it is verified independently and is
  *                     never used as a fallback for the normalized CAP.
  * @param string $citta Original city value.
  * @param string $provincia Original province value.
- * @param bool $fuzzy Reserved for a future fuzzy mode. It must currently be false.
+ * @param bool $fuzzy Enables conservative street-name abbreviation/one-token typo matching
+ *                     for STREET_BASED addresses only. Exact directory evidence always wins;
+ *                     fuzzy matching can abstain and never uses the source CAP to select a street.
  *
  * @return array{
  *     via_normalizzata: string,
@@ -34,8 +35,10 @@ use Normalizzatore\Csv\AddressProcessingResultSerializer;
  *         The ten appended CSV values, keyed in the same order as the CLI output.
  *         Normalized fields that are ambiguous, unverifiable, or missing are
  *         empty strings. `cap_normalizzato` is populated only for RESOLVED results.
+ *         Fuzzy street corrections are proposed only when the normal CAP resolver resolves
+ *         the selected directory street. The first eligible fuzzy call lazily builds a
+ *         connection-local temporary catalog; the deterministic mode does not build it.
  *
- * @throws LogicException When `$fuzzy` is true because fuzzy processing is not yet available.
  * @throws Throwable When the application database or another processing dependency fails.
  */
 function normalizza(
@@ -45,10 +48,6 @@ function normalizza(
     string $provincia,
     bool $fuzzy = false,
 ): array {
-    if ($fuzzy) {
-        throw new LogicException('La modalità fuzzy non è ancora disponibile.');
-    }
-
     static $processor = null;
     static $serializer = null;
 
@@ -57,7 +56,7 @@ function normalizza(
         $serializer = new AddressProcessingResultSerializer();
     }
 
-    $values = $serializer->serialize($processor->process(new AddressInput($address, $cap, $citta, $provincia)));
+    $values = $serializer->serialize($processor->process(new AddressInput($address, $cap, $citta, $provincia), $fuzzy));
     $result = array_combine(AddressProcessingResultSerializer::OUTPUT_COLUMNS, $values);
     if ($result === false) {
         throw new LogicException('Impossibile associare i valori normalizzati alle colonne pubbliche.');
