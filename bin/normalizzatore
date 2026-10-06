@@ -14,7 +14,7 @@ use Normalizzatore\Csv\CsvWriter;
 use Normalizzatore\Csv\NormalizeArguments;
 
 if (($argv[1] ?? null) !== 'normalize') {
-    fwrite(STDERR, "Usage: bin/normalizzatore normalize input.csv output.csv [--delimiter=\";\"]\n");
+    fwrite(STDERR, "Usage: bin/normalizzatore normalize input.csv output.csv [--delimiter=\";\"] [--fuzzy]\nFuzzy: abbreviazioni e typo supportati, solo dopo un lookup deterministico della via senza risultati.\nSummary: ricerche = chiamate provider; match/ambigui = esiti nominali; risolti = match nominali confermati dal resolver CAP.\n");
     exit(2);
 }
 
@@ -31,7 +31,7 @@ try {
     CsvHeaderMap::fromHeader($inputCsv->header, AddressProcessingResultSerializer::OUTPUT_COLUMNS);
     $processor = AddressProcessorFactory::create($root);
     $pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
-    $summary = $pipeline->run($options->inputPath, $options->outputPath, $options->delimiter);
+    $summary = $pipeline->run($options->inputPath, $options->outputPath, $options->delimiter, $options->fuzzy);
     fwrite(STDOUT, $summary->toText());
 } catch (Throwable $exception) {
     fwrite(STDERR, 'Errore: ' . $exception->getMessage() . "\n");

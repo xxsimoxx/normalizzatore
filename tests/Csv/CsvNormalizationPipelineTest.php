@@ -14,10 +14,16 @@ use Normalizzatore\Csv\CsvNormalizationPipeline;
 use Normalizzatore\Csv\CsvReader;
 use Normalizzatore\Csv\CsvWriter;
 use Normalizzatore\Csv\NormalizeArguments;
+use Normalizzatore\Directory\AddressDirectoryInterface;
+use Normalizzatore\Directory\FuzzyStreetCandidateProvider;
+use Normalizzatore\Directory\FuzzyStreetCandidateSet;
 use Normalizzatore\Directory\SqliteAddressDirectory;
 use Normalizzatore\Normalization\AddressFieldNormalizer;
 use Normalizzatore\Resolution\AddressResolutionOrchestrator;
 use Normalizzatore\Resolution\CapResolver;
+use Normalizzatore\Resolution\FuzzyStreetCandidateQuery;
+use Normalizzatore\Resolution\FuzzyStreetNameCandidate;
+use Normalizzatore\Resolution\FuzzyStreetMatcher;
 use Normalizzatore\Resolution\TerritorialResolver;
 use Normalizzatore\Tests\Support\SqliteDirectoryFixture;
 use Normalizzatore\Verification\SourceCapVerifier;
@@ -37,6 +43,10 @@ final class CsvNormalizationPipelineTest extends TestCase
         $this->database = $this->directory . '/directory.sqlite';
         SqliteDirectoryFixture::create($this->database, [
             SqliteDirectoryFixture::row('VIA ROMA', '00100', 'ROMA', 'RM', 'T', '1', '99'),
+            SqliteDirectoryFixture::row('VIA ENRICO FERMI', '00100', 'ROMA', 'RM', 'T', '1', '10'),
+            SqliteDirectoryFixture::row('VIA CAPPUCCINA', '00100', 'ROMA', 'RM', 'T', '1', '10'),
+            SqliteDirectoryFixture::row('VIA GAETA', '00100', 'ROMA', 'RM', 'T', '1', '99'),
+            SqliteDirectoryFixture::row('VIA ZATTA', '00200', 'ROMA', 'RM', 'T', '1', '99'),
             SqliteDirectoryFixture::row('VIA A "B" | C: D->E', '00100', 'ROMA', 'RM', 'T', '1', '99'),
             SqliteDirectoryFixture::row('OLBIA', '07026', 'OLBIA', 'SS', '', '', ''),
             SqliteDirectoryFixture::row('CASTRO', '24063', 'CASTRO', 'BG', '', '', ''),
@@ -50,6 +60,8 @@ final class CsvNormalizationPipelineTest extends TestCase
             $directory,
             new CapResolver(),
             new TerritorialResolver(),
+            $directory,
+            new FuzzyStreetMatcher(),
         );
         $processor = new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());
         $this->pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
@@ -277,11 +289,159 @@ final class CsvNormalizationPipelineTest extends TestCase
 
     public function testArgumentParserProvidesDefaultAndCustomDelimiterOnly(): void
     {
-        self::assertSame(';', NormalizeArguments::parse(['in.csv', 'out.csv'])->delimiter);
+        $default = NormalizeArguments::parse(['in.csv', 'out.csv']);
+        self::assertSame(';', $default->delimiter);
+        self::assertFalse($default->fuzzy);
         self::assertSame(',', NormalizeArguments::parse(['in.csv', 'out.csv', '--delimiter=,'])->delimiter);
         self::assertSame("\t", NormalizeArguments::parse(['in.csv', 'out.csv', "--delimiter=\t"])->delimiter);
+        $fuzzyFirst = NormalizeArguments::parse(['in.csv', 'out.csv', '--fuzzy', '--delimiter=,']);
+        self::assertTrue($fuzzyFirst->fuzzy);
+        self::assertSame(',', $fuzzyFirst->delimiter);
+        $fuzzyLast = NormalizeArguments::parse(['in.csv', 'out.csv', '--delimiter=,', '--fuzzy']);
+        self::assertTrue($fuzzyLast->fuzzy);
+        self::assertSame(',', $fuzzyLast->delimiter);
         $this->expectException(\InvalidArgumentException::class);
         NormalizeArguments::parse(['in.csv', 'out.csv', '--force']);
+    }
+
+    public function testArgumentParserRejectsFuzzyValuesAndDuplicateOptions(): void
+    {
+        foreach ([
+            ['in.csv', 'out.csv', '--fuzzy=true'],
+            ['in.csv', 'out.csv', '--fuzzy', '--fuzzy'],
+            ['in.csv', 'out.csv', '--delimiter=;', '--delimiter=;'],
+        ] as $arguments) {
+            try {
+                NormalizeArguments::parse($arguments);
+                self::fail('Expected unsupported or duplicate option to fail.');
+            } catch (\InvalidArgumentException) {
+                self::assertTrue(true);
+            }
+        }
+    }
+
+    public function testFuzzyCsvPipelineUsesTypedEvidenceAndAddsOnlySummaryStatistics(): void
+    {
+        $input = $this->write('fuzzy.csv', "note,vianum,CAP,citta,Provincia\nexact,VIA ROMA 5,00100,ROMA,RM\nabbreviation,VIA E. FERMI 5,00100,ROMA,RM\ntypo,VIA CAPUCCINA 5,00100,ROMA,RM\nambiguous,VIA GATTA 5,00100,ROMA,RM\nnominal-only,VIA CAPUCCINA 99,00100,ROMA,RM\nno-match,VIA SCONOSCIUTA 1,00100,ROMA,RM\nshort-token,VIA XYZ 5,00100,ROMA,RM\nprovince-conflict,VIA CAPUCCINA 5,00100,ROMA,XX\nparser,VIA 4 NOVEMBRE 1470,00100,ROMA,RM\nterritorial,VIA ROMA 5,07026,OLBIA,SS\n");
+        $output = $this->directory . '/fuzzy-output.csv';
+
+        $summary = $this->pipeline->run($input, $output, ',', true);
+        $document = (new CsvReader())->read($output, ',');
+
+        self::assertSame(['note', 'vianum', 'CAP', 'citta', 'Provincia', ...AddressProcessingResultSerializer::OUTPUT_COLUMNS], $document->header);
+        self::assertSame('exact', $document->rows[0][0]);
+        self::assertSame('VIA ROMA 5', $document->rows[0][1]);
+        self::assertSame('VIA ENRICO FERMI', $document->rows[1][5]);
+        self::assertSame('RESOLVED', $document->rows[1][11]);
+        self::assertStringContainsString('fuzzy_abbreviation_expansion', $document->rows[1][13]);
+        self::assertSame('VIA CAPPUCCINA', $document->rows[2][5]);
+        self::assertSame('RESOLVED', $document->rows[2][11]);
+        self::assertStringContainsString('fuzzy_typo_match', $document->rows[2][14]);
+        self::assertSame('NO_MATCH', $document->rows[3][11]);
+        self::assertStringContainsString('fuzzy_ambiguous', $document->rows[3][14]);
+        self::assertSame('NO_MATCH', $document->rows[4][11]);
+        self::assertStringNotContainsString('fuzzy_typo_correction', $document->rows[4][13], 'A nominal match without a resolved CAP cannot become an applied street correction.');
+        self::assertStringContainsString('fuzzy_typo_match', $document->rows[4][14]);
+        self::assertSame('NO_MATCH', $document->rows[7][11]);
+        self::assertStringContainsString('fuzzy_province_conflict', $document->rows[7][14]);
+        self::assertSame('RESOLVED', $document->rows[9][11]);
+        self::assertStringNotContainsString('fuzzy_', $document->rows[9][14]);
+        self::assertCount(15, $document->header);
+        self::assertSame(10, $summary->processed);
+        self::assertSame(7, $summary->fuzzyStatistics?->providerCalls);
+        self::assertSame(1, $summary->fuzzyStatistics?->providerGeographicNotApplicable);
+        self::assertSame(1, $summary->fuzzyStatistics?->abbreviationMatches);
+        self::assertSame(2, $summary->fuzzyStatistics?->typoMatches);
+        self::assertSame(1, $summary->fuzzyStatistics?->ambiguous);
+        self::assertSame(1, $summary->fuzzyStatistics?->noMatch);
+        self::assertSame(1, $summary->fuzzyStatistics?->nominalNotApplicable);
+        self::assertSame(2, $summary->fuzzyStatistics?->resolved);
+        self::assertSame(
+            $summary->fuzzyStatistics?->providerCalls,
+            $summary->fuzzyStatistics?->providerGeographicNotApplicable
+                + $summary->fuzzyStatistics?->abbreviationMatches
+                + $summary->fuzzyStatistics?->typoMatches
+                + $summary->fuzzyStatistics?->ambiguous
+                + $summary->fuzzyStatistics?->noMatch
+                + $summary->fuzzyStatistics?->nominalNotApplicable,
+        );
+        self::assertLessThanOrEqual(
+            $summary->fuzzyStatistics?->abbreviationMatches + $summary->fuzzyStatistics?->typoMatches,
+            $summary->fuzzyStatistics?->resolved,
+        );
+        self::assertStringContainsString("Fuzzy:\n  Ricerche candidate (provider invocato): 7", $summary->toText());
+        self::assertStringContainsString('Provider senza ambito geografico utilizzabile: 1', $summary->toText());
+        self::assertStringContainsString('Matching nominale non applicabile: 1', $summary->toText());
+        self::assertStringContainsString('Match nominali per abbreviazione: 1', $summary->toText());
+        self::assertStringContainsString('Risolti dopo il resolver CAP: 2', $summary->toText());
+        self::assertStringContainsString(
+            "Fuzzy:\n  Ricerche candidate (provider invocato): 7\n  Provider senza ambito geografico utilizzabile: 1\n  Match nominali per abbreviazione: 1\n  Match nominali per typo: 2\n  Ambigui nominali: 1\n  Nessun nome compatibile: 1\n  Matching nominale non applicabile: 1\n  Risolti dopo il resolver CAP: 2\n",
+            $summary->toText(),
+        );
+
+        $deterministicOutput = $this->directory . '/deterministic-output.csv';
+        $deterministicSummary = $this->pipeline->run($input, $deterministicOutput, ',', false);
+        self::assertNull($deterministicSummary->fuzzyStatistics);
+        self::assertStringNotContainsString('Fuzzy:', $deterministicSummary->toText());
+    }
+
+    public function testFuzzyFlagDoesNotInitializeCatalogForExactAndTerritorialOnlyCsv(): void
+    {
+        $input = $this->write('fuzzy-lazy.csv', "vianum,CAP,citta,Provincia\nVIA ROMA 5,00100,ROMA,RM\nOLBIA,07026,OLBIA,SS\n,,,\n");
+        $output = $this->directory . '/fuzzy-lazy-output.csv';
+
+        $this->pipeline->run($input, $output, ',', true);
+        self::assertSame(0, (int) $this->connection()->query(
+            "SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table' AND name='fuzzy_street_names'",
+        )->fetchColumn());
+    }
+
+    public function testFuzzyOperationalFailureDoesNotPublishPartialCsv(): void
+    {
+        $directory = new class implements AddressDirectoryInterface, FuzzyStreetCandidateProvider {
+            public function findByStreetCityProvince(string $street, string $city, string $province): array
+            {
+                return [];
+            }
+
+            public function findTerritorialEntries(string $city): array
+            {
+                return [];
+            }
+
+            public function findCandidates(FuzzyStreetCandidateQuery $query): FuzzyStreetCandidateSet
+            {
+                throw new RuntimeException('fuzzy catalog initialization failed');
+            }
+
+            public function findEntries(FuzzyStreetCandidateSet $set, FuzzyStreetNameCandidate $candidate): array
+            {
+                return [];
+            }
+        };
+        $orchestrator = new AddressResolutionOrchestrator(
+            new AddressStrategyClassifier(new CapizzatedCityCatalog([new CapizzatedCity('ROMA', 'RM')])),
+            new AddressParser(),
+            $directory,
+            new CapResolver(),
+            new TerritorialResolver(),
+            $directory,
+            new FuzzyStreetMatcher(),
+        );
+        $processor = new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());
+        $pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
+        $input = $this->write('fuzzy-operational-error.csv', "vianum;CAP;citta;Provincia\nVIA SCONOSCIUTA 1;00100;ROMA;RM\n");
+        $output = $this->directory . '/fuzzy-operational-error-output.csv';
+
+        try {
+            $pipeline->run($input, $output, ';', true);
+            self::fail('Expected fuzzy catalog initialization to fail.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('fuzzy catalog initialization failed', $exception->getMessage());
+        }
+
+        self::assertFileDoesNotExist($output);
+        self::assertSame([], glob($this->directory . '/.fuzzy-operational-error-output.csv.tmp-*'));
     }
 
     private function write(string $name, string $contents): string
@@ -289,5 +449,17 @@ final class CsvNormalizationPipelineTest extends TestCase
         $path = $this->directory . '/' . $name;
         file_put_contents($path, $contents);
         return $path;
+    }
+
+    private function connection(): \PDO
+    {
+        return (new \ReflectionProperty(SqliteAddressDirectory::class, 'pdo'))->getValue($this->pipelineDirectory());
+    }
+
+    private function pipelineDirectory(): SqliteAddressDirectory
+    {
+        return (new \ReflectionProperty(AddressResolutionOrchestrator::class, 'directory'))
+            ->getValue((new \ReflectionProperty(AddressProcessor::class, 'resolutionOrchestrator'))
+                ->getValue((new \ReflectionProperty(CsvNormalizationPipeline::class, 'processor'))->getValue($this->pipeline)));
     }
 }

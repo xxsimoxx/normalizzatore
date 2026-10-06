@@ -118,6 +118,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
 
         $this->fuzzyProvinceLookup->execute([':city_key' => $cityKey]);
         $provinceKeys = array_map('strval', $this->fuzzyProvinceLookup->fetchAll(PDO::FETCH_COLUMN));
+        $this->fuzzyProvinceLookup->closeCursor();
         if ($provinceKeys === []) {
             return new FuzzyStreetCandidateSet(FuzzyStreetCandidateSetStatus::NO_LOCALITY);
         }
@@ -180,6 +181,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
             ':province_key' => $set->provinceKey,
         ]);
         $localityId = $this->fuzzyLocalityLookup->fetchColumn();
+        $this->fuzzyLocalityLookup->closeCursor();
         if ($localityId === false) {
             throw new DirectorySchemaException('The selected fuzzy street candidate locality is absent from its temporary catalog.');
         }
@@ -193,6 +195,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
         foreach ($this->fuzzyEntryLookup->fetchAll() as $row) {
             $entries[] = $this->directoryEntryFromRow($row);
         }
+        $this->fuzzyEntryLookup->closeCursor();
 
         return $entries;
     }
@@ -219,6 +222,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
             }
             $this->fuzzyLocalityLookup->execute([':city_key' => $cityKey, ':province_key' => $provinceKey]);
             $localityId = $this->fuzzyLocalityLookup->fetchColumn();
+            $this->fuzzyLocalityLookup->closeCursor();
             if ($localityId === false) {
                 return [];
             }
@@ -243,6 +247,7 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
             }
             $candidates[] = new FuzzyStreetNameCandidate($tokenized);
         }
+        $lookup->closeCursor();
 
         return $candidates;
     }

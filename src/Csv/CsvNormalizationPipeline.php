@@ -6,7 +6,10 @@ namespace Normalizzatore\Csv;
 
 use Normalizzatore\Address\AddressInput;
 use Normalizzatore\Application\AddressProcessor;
+use Normalizzatore\Directory\FuzzyStreetCandidateSetStatus;
 use Normalizzatore\Resolution\AddressResolutionStatus;
+use Normalizzatore\Resolution\FuzzyStreetMatchKind;
+use Normalizzatore\Resolution\FuzzyStreetResolutionStatus;
 use RuntimeException;
 use Throwable;
 
@@ -20,7 +23,7 @@ final readonly class CsvNormalizationPipeline
     ) {
     }
 
-    public function run(string $inputPath, string $outputPath, string $delimiter = ';'): CsvNormalizationSummary
+    public function run(string $inputPath, string $outputPath, string $delimiter = ';', bool $fuzzy = false): CsvNormalizationSummary
     {
         $started = hrtime(true);
         if (!is_file($inputPath) || !is_readable($inputPath)) {
@@ -54,12 +57,15 @@ final readonly class CsvNormalizationPipeline
             $this->writer->writeRecord($handle, [...$stream->header, ...AddressProcessingResultSerializer::OUTPUT_COLUMNS], $delimiter);
 
             $processed = $resolved = $ambiguous = $unresolved = $rowsWithCorrections = 0;
+            $fuzzyProviderCalls = $fuzzyProviderGeographicNotApplicable = 0;
+            $fuzzyAbbreviationMatches = $fuzzyTypoMatches = $fuzzyAmbiguous = 0;
+            $fuzzyNoMatch = $fuzzyNominalNotApplicable = $fuzzyResolved = 0;
             foreach ($stream->rows() as $row) {
                 if (count($row) !== count($stream->header)) {
                     throw new RuntimeException(sprintf('Malformed CSV row %d: expected %d columns, got %d.', $processed + 2, count($stream->header), count($row)));
                 }
                 $input = $headerMap->addressInput($row);
-                $result = $this->processor->process($input);
+                $result = $this->processor->process($input, $fuzzy);
                 $this->writer->writeRecord($handle, [...$row, ...$this->serializer->serialize($result)], $delimiter);
                 ++$processed;
                 match ($result->resolution->status) {
@@ -69,6 +75,35 @@ final readonly class CsvNormalizationPipeline
                 };
                 if ($result->sourceCapCorrection() !== null || $result->fieldCorrections() !== []) {
                     ++$rowsWithCorrections;
+                }
+                $fuzzyEvidence = $result->resolution->fuzzyStreetEvidence;
+                if ($fuzzy && $fuzzyEvidence !== null) {
+                    $candidateSet = $fuzzyEvidence->candidateSet;
+                    if ($candidateSet !== null) {
+                        ++$fuzzyProviderCalls;
+                        if ($candidateSet->status !== FuzzyStreetCandidateSetStatus::AVAILABLE) {
+                            ++$fuzzyProviderGeographicNotApplicable;
+                        } else {
+                            $nominalResolution = $fuzzyEvidence->nominalResolution;
+                            if ($nominalResolution === null) {
+                                throw new RuntimeException('An available fuzzy candidate set must have a nominal matcher result.');
+                            }
+                            match ($nominalResolution->status) {
+                                FuzzyStreetResolutionStatus::MATCH => match ($nominalResolution->match?->kind) {
+                                    FuzzyStreetMatchKind::ABBREVIATION => ++$fuzzyAbbreviationMatches,
+                                    FuzzyStreetMatchKind::TYPO => ++$fuzzyTypoMatches,
+                                    null => throw new RuntimeException('A fuzzy nominal match must retain its match kind.'),
+                                },
+                                FuzzyStreetResolutionStatus::AMBIGUOUS => ++$fuzzyAmbiguous,
+                                FuzzyStreetResolutionStatus::NO_MATCH => ++$fuzzyNoMatch,
+                                FuzzyStreetResolutionStatus::NOT_APPLICABLE => ++$fuzzyNominalNotApplicable,
+                            };
+                            if ($nominalResolution->status === FuzzyStreetResolutionStatus::MATCH
+                                && $result->resolution->status === AddressResolutionStatus::RESOLVED) {
+                                ++$fuzzyResolved;
+                            }
+                        }
+                    }
                 }
             }
             if (!fflush($handle)) {
@@ -96,6 +131,16 @@ final readonly class CsvNormalizationPipeline
                 $unresolved,
                 $rowsWithCorrections,
                 (hrtime(true) - $started) / 1_000_000_000,
+                $fuzzy ? new FuzzyNormalizationStatistics(
+                    $fuzzyProviderCalls,
+                    $fuzzyProviderGeographicNotApplicable,
+                    $fuzzyAbbreviationMatches,
+                    $fuzzyTypoMatches,
+                    $fuzzyAmbiguous,
+                    $fuzzyNoMatch,
+                    $fuzzyNominalNotApplicable,
+                    $fuzzyResolved,
+                ) : null,
             );
         } catch (Throwable $exception) {
             if (is_resource($handle)) {

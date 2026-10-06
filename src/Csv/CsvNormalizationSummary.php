@@ -13,12 +13,13 @@ final readonly class CsvNormalizationSummary
         public int $unresolved,
         public int $rowsWithCorrections,
         public float $elapsedSeconds,
+        public ?FuzzyNormalizationStatistics $fuzzyStatistics = null,
     ) {
     }
 
     public function toText(): string
     {
-        return sprintf(
+        $text = sprintf(
             "Elaborate: %d righe\nRisolte: %d\nAmbigue: %d\nNon risolte: %d\nCorrezioni: %d\nTempo: %.2f s\n",
             $this->processed,
             $this->resolved,
@@ -27,5 +28,11 @@ final readonly class CsvNormalizationSummary
             $this->rowsWithCorrections,
             $this->elapsedSeconds,
         );
+
+        if ($this->fuzzyStatistics !== null) {
+            $text .= $this->fuzzyStatistics->toText();
+        }
+
+        return $text;
     }
 }
