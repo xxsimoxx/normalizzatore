@@ -23,4 +23,10 @@ enum AddressResolutionDiagnostic: string
     case FUZZY_PROVINCE_CONFLICT = 'fuzzy_province_conflict';
     case FUZZY_AMBIGUOUS_LOCALITY = 'fuzzy_ambiguous_locality';
     case FUZZY_NO_LOCALITY = 'fuzzy_no_locality';
+    case FUZZY_CITY_MATCH = 'fuzzy_city_match';
+    case FUZZY_CITY_AMBIGUOUS = 'fuzzy_city_ambiguous';
+    case FUZZY_CITY_NO_MATCH = 'fuzzy_city_no_match';
+    case FUZZY_CITY_NOT_APPLICABLE = 'fuzzy_city_not_applicable';
+    case TERRITORIAL_LOCATION_CONFLICT = 'territorial_location_conflict';
+    case TERRITORIAL_STREET_RECOVERY = 'territorial_street_recovery';
 }

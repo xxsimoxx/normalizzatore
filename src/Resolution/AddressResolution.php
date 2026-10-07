@@ -6,6 +6,7 @@ namespace Normalizzatore\Resolution;
 
 use InvalidArgumentException;
 use Normalizzatore\Address\AddressResolutionStrategy;
+use Normalizzatore\City\FuzzyCityResolution;
 
 /** Common, typed result of either address-resolution path. */
 final readonly class AddressResolution
@@ -24,6 +25,8 @@ final readonly class AddressResolution
         public array $streetCandidateResolutions,
         public array $diagnostics,
         public ?FuzzyStreetAddressEvidence $fuzzyStreetEvidence = null,
+        public ?FuzzyCityResolution $fuzzyCityResolution = null,
+        public ?AddressGeographicEvidence $geographicEvidence = null,
     ) {
         foreach ([$candidateCaps, $streetCandidateResolutions, $diagnostics] as $list) {
             if (!array_is_list($list)) {
@@ -58,6 +61,20 @@ final readonly class AddressResolution
             && ($strategy !== AddressResolutionStrategy::STREET_BASED
                 || !in_array($fuzzyStreetEvidence->diagnostic, $diagnostics, true))) {
             throw new InvalidArgumentException('Fuzzy street evidence must belong to a street-based result and be exposed as a diagnostic.');
+        }
+        if ($fuzzyCityResolution !== null
+            && !in_array($fuzzyCityResolution->status, [
+                \Normalizzatore\City\FuzzyCityResolutionStatus::MATCH,
+                \Normalizzatore\City\FuzzyCityResolutionStatus::AMBIGUOUS,
+                \Normalizzatore\City\FuzzyCityResolutionStatus::NO_MATCH,
+                \Normalizzatore\City\FuzzyCityResolutionStatus::NOT_APPLICABLE,
+            ], true)) {
+            throw new InvalidArgumentException('Fuzzy city evidence must use a typed city resolution status.');
+        }
+        if ($geographicEvidence !== null && $fuzzyCityResolution?->status !== null
+            && $geographicEvidence->kind === AddressGeographicEvidenceKind::FUZZY_CITY_CORRECTION
+            && $fuzzyCityResolution->match !== $geographicEvidence->fuzzyCityMatch) {
+            throw new InvalidArgumentException('Applied city correction must reference its fuzzy city match evidence.');
         }
 
         if ($status === AddressResolutionStatus::RESOLVED

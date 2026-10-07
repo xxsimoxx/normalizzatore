@@ -16,4 +16,5 @@ enum AddressFieldDiagnostic: string
     case PROVINCE_SIGLA_DIFFERS_FROM_DIRECTORY = 'province_sigla_differs_from_directory';
     case PROVINCE_SOURCE_MISSING = 'province_source_missing';
     case PROVINCE_SOURCE_INVALID = 'province_source_invalid';
+    case FUZZY_CITY_AMBIGUOUS = 'fuzzy_city_ambiguous';
 }

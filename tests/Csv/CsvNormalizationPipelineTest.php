@@ -342,20 +342,22 @@ final class CsvNormalizationPipelineTest extends TestCase
         self::assertSame('NO_MATCH', $document->rows[4][11]);
         self::assertStringNotContainsString('fuzzy_typo_correction', $document->rows[4][13], 'A nominal match without a resolved CAP cannot become an applied street correction.');
         self::assertStringContainsString('fuzzy_typo_match', $document->rows[4][14]);
-        self::assertSame('NO_MATCH', $document->rows[7][11]);
-        self::assertStringContainsString('fuzzy_province_conflict', $document->rows[7][14]);
+        self::assertSame('RESOLVED', $document->rows[7][11]);
+        self::assertSame('RM', $document->rows[7][10]);
+        self::assertStringContainsString('territorial_province_correction', $document->rows[7][13]);
+        self::assertStringContainsString('fuzzy_typo_match', $document->rows[7][14]);
         self::assertSame('RESOLVED', $document->rows[9][11]);
         self::assertStringNotContainsString('fuzzy_', $document->rows[9][14]);
         self::assertCount(15, $document->header);
         self::assertSame(10, $summary->processed);
         self::assertSame(7, $summary->fuzzyStatistics?->providerCalls);
-        self::assertSame(1, $summary->fuzzyStatistics?->providerGeographicNotApplicable);
+        self::assertSame(0, $summary->fuzzyStatistics?->providerGeographicNotApplicable);
         self::assertSame(1, $summary->fuzzyStatistics?->abbreviationMatches);
-        self::assertSame(2, $summary->fuzzyStatistics?->typoMatches);
+        self::assertSame(3, $summary->fuzzyStatistics?->typoMatches);
         self::assertSame(1, $summary->fuzzyStatistics?->ambiguous);
         self::assertSame(1, $summary->fuzzyStatistics?->noMatch);
         self::assertSame(1, $summary->fuzzyStatistics?->nominalNotApplicable);
-        self::assertSame(2, $summary->fuzzyStatistics?->resolved);
+        self::assertSame(3, $summary->fuzzyStatistics?->resolved);
         self::assertSame(
             $summary->fuzzyStatistics?->providerCalls,
             $summary->fuzzyStatistics?->providerGeographicNotApplicable
@@ -369,13 +371,13 @@ final class CsvNormalizationPipelineTest extends TestCase
             $summary->fuzzyStatistics?->abbreviationMatches + $summary->fuzzyStatistics?->typoMatches,
             $summary->fuzzyStatistics?->resolved,
         );
-        self::assertStringContainsString("Fuzzy:\n  Ricerche candidate (provider invocato): 7", $summary->toText());
-        self::assertStringContainsString('Provider senza ambito geografico utilizzabile: 1', $summary->toText());
+        self::assertStringContainsString("Fuzzy via:\n  Ricerche candidate (provider invocato): 7", $summary->toText());
+        self::assertStringContainsString('Provider senza ambito geografico utilizzabile: 0', $summary->toText());
         self::assertStringContainsString('Matching nominale non applicabile: 1', $summary->toText());
         self::assertStringContainsString('Match nominali per abbreviazione: 1', $summary->toText());
-        self::assertStringContainsString('Risolti dopo il resolver CAP: 2', $summary->toText());
+        self::assertStringContainsString('Risolti dopo il resolver CAP: 3', $summary->toText());
         self::assertStringContainsString(
-            "Fuzzy:\n  Ricerche candidate (provider invocato): 7\n  Provider senza ambito geografico utilizzabile: 1\n  Match nominali per abbreviazione: 1\n  Match nominali per typo: 2\n  Ambigui nominali: 1\n  Nessun nome compatibile: 1\n  Matching nominale non applicabile: 1\n  Risolti dopo il resolver CAP: 2\n",
+            "Fuzzy via:\n  Ricerche candidate (provider invocato): 7\n  Provider senza ambito geografico utilizzabile: 0\n  Match nominali per abbreviazione: 1\n  Match nominali per typo: 3\n  Ambigui nominali: 1\n  Nessun nome compatibile: 1\n  Matching nominale non applicabile: 1\n  Risolti dopo il resolver CAP: 3\n",
             $summary->toText(),
         );
 

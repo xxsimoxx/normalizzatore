@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Normalizzatore\Directory;
 
+use Normalizzatore\City\CityCandidate;
 use Normalizzatore\Address\StreetNameTokenizer;
 use Normalizzatore\Resolution\FuzzyStreetCandidateQuery;
 use Normalizzatore\Resolution\FuzzyStreetNameCandidate;
@@ -13,7 +14,7 @@ use PDOStatement;
 use RuntimeException;
 use Throwable;
 
-final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzyStreetCandidateProvider
+final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzyStreetCandidateProvider, FuzzyCityCandidateProvider, TerritorialStreetRecoveryProvider
 {
     private PDO $pdo;
     private ?PDOStatement $streetLookup = null;
@@ -24,6 +25,8 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
     private ?PDOStatement $fuzzyCityCandidateLookup = null;
     private ?PDOStatement $fuzzyEntryLookup = null;
     private ?FuzzyStreetCatalogStatistics $fuzzyStatistics = null;
+    /** @var list<CityCandidate>|null */
+    private ?array $cityCandidates = null;
 
     public function __construct(
         string $sqlitePath,
@@ -99,6 +102,63 @@ final class SqliteAddressDirectory implements AddressDirectoryInterface, FuzzySt
                 (int) $row['record_count'],
             );
         }
+
+        return $entries;
+    }
+
+    public function findCityCandidates(): array
+    {
+        $this->prepareTerritorialIndex();
+        if ($this->cityCandidates !== null) {
+            return $this->cityCandidates;
+        }
+
+        $statement = $this->pdo->query(<<<'SQL'
+            SELECT citta_key, MIN(citta) AS city, pr
+            FROM temp.territorial_directory_entries
+            WHERE citta_key <> '' AND length(trim(pr)) = 2
+            GROUP BY citta_key, pr
+            ORDER BY citta_key, pr
+            SQL);
+        $candidates = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $candidates[] = new CityCandidate($row['city'], $row['citta_key'], $row['pr']);
+        }
+        $statement->closeCursor();
+        $this->cityCandidates = $candidates;
+
+        return $this->cityCandidates;
+    }
+
+    public function findByStreetAcrossLocalities(string $street, ?string $province = null): array
+    {
+        $this->prepareStreetIndex();
+        $provinceKey = $province === null || trim($province) === ''
+            ? null
+            : $this->keyNormalizer->normalize($province);
+        $provincePredicate = $provinceKey === null ? '' : ' AND d.pr_key = :province_key';
+        $canonicalProvincePredicate = $provinceKey === null ? '' : ' AND c.pr_key = :province_key';
+        $statement = $this->pdo->prepare(<<<SQL
+            SELECT d.id, d.vianum, d.cap, d.citta, d.pr, d.pari_dispa, d.civico_da, d.civico_a
+            FROM main.directory_entries AS d
+            WHERE d.vianum_key = :street_key{$provincePredicate}
+            UNION ALL
+            SELECT d.id, d.vianum, d.cap, d.citta, d.pr, d.pari_dispa, d.civico_da, d.civico_a
+            FROM temp.canonical_street_directory_entries AS c
+            INNER JOIN main.directory_entries AS d ON d.id = c.id
+            WHERE c.vianum_key = :street_key{$canonicalProvincePredicate}
+            ORDER BY d.id ASC
+            SQL);
+        $parameters = [':street_key' => $this->keyNormalizer->normalize($street)];
+        if ($provinceKey !== null) {
+            $parameters[':province_key'] = $provinceKey;
+        }
+        $statement->execute($parameters);
+        $entries = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $entries[] = $this->directoryEntryFromRow($row);
+        }
+        $statement->closeCursor();
 
         return $entries;
     }

@@ -26,7 +26,7 @@ final readonly class FuzzyNormalizationStatistics
     public function toText(): string
     {
         return sprintf(
-            "Fuzzy:\n  Ricerche candidate (provider invocato): %d\n  Provider senza ambito geografico utilizzabile: %d\n  Match nominali per abbreviazione: %d\n  Match nominali per typo: %d\n  Ambigui nominali: %d\n  Nessun nome compatibile: %d\n  Matching nominale non applicabile: %d\n  Risolti dopo il resolver CAP: %d\n",
+            "Fuzzy via:\n  Ricerche candidate (provider invocato): %d\n  Provider senza ambito geografico utilizzabile: %d\n  Match nominali per abbreviazione: %d\n  Match nominali per typo: %d\n  Ambigui nominali: %d\n  Nessun nome compatibile: %d\n  Matching nominale non applicabile: %d\n  Risolti dopo il resolver CAP: %d\n",
             $this->providerCalls,
             $this->providerGeographicNotApplicable,
             $this->abbreviationMatches,

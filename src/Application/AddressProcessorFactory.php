@@ -6,7 +6,9 @@ namespace Normalizzatore\Application;
 
 use Normalizzatore\Address\AddressParser;
 use Normalizzatore\Address\AddressStrategyClassifier;
+use Normalizzatore\Address\StreetNameTokenizer;
 use Normalizzatore\City\CapizzatedCityCatalog;
+use Normalizzatore\City\FuzzyCityResolver;
 use Normalizzatore\Directory\SqliteAddressDirectory;
 use Normalizzatore\Resolution\FuzzyStreetMatcher;
 use Normalizzatore\Normalization\AddressFieldNormalizer;
@@ -24,13 +26,17 @@ final class AddressProcessorFactory
         $catalog = CapizzatedCityCatalog::fromTsvFile($projectRoot . '/resources/capizzated-cities.tsv');
         $directory = new SqliteAddressDirectory($projectRoot . '/var/archi_cap.sqlite');
         $orchestrator = new AddressResolutionOrchestrator(
-            new AddressStrategyClassifier($catalog),
-            new AddressParser(),
-            $directory,
-            new CapResolver(),
-            new TerritorialResolver(),
-            $directory,
-            new FuzzyStreetMatcher(),
+            strategyClassifier: new AddressStrategyClassifier($catalog),
+            addressParser: new AddressParser(),
+            directory: $directory,
+            capResolver: new CapResolver(),
+            territorialResolver: new TerritorialResolver(),
+            fuzzyCandidateProvider: $directory,
+            fuzzyStreetMatcher: new FuzzyStreetMatcher(),
+            streetNameTokenizer: new StreetNameTokenizer(),
+            fuzzyCityCandidateProvider: $directory,
+            fuzzyCityResolver: new FuzzyCityResolver(),
+            territorialStreetRecoveryProvider: $directory,
         );
 
         return new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());

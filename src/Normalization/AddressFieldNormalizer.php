@@ -13,7 +13,9 @@ use Normalizzatore\Address\AddressSyntaxPreferenceEvaluator;
 use Normalizzatore\Directory\DirectoryEntry;
 use Normalizzatore\Directory\DirectoryKeyNormalizer;
 use Normalizzatore\Directory\TerritorialEntry;
+use Normalizzatore\City\FuzzyCityResolutionStatus;
 use Normalizzatore\Resolution\AddressResolution;
+use Normalizzatore\Resolution\AddressGeographicEvidenceKind;
 use Normalizzatore\Resolution\AddressResolutionDiagnostic;
 use Normalizzatore\Resolution\AddressResolutionStatus;
 use Normalizzatore\Resolution\FuzzyStreetMatchKind;
@@ -56,12 +58,15 @@ final readonly class AddressFieldNormalizer
             }
         }
 
+        $geographicEvidence = $resolution->geographicEvidence;
+        $lookupCity = $geographicEvidence?->resolvedCity ?? ($input->city ?? '');
+        $lookupProvince = $geographicEvidence?->resolvedProvince ?? ($input->province ?? '');
         $supported = [];
         foreach ($interpretations as $item) {
             $relevantEntries = array_values(array_filter(
                 $item['entries'],
-                fn (DirectoryEntry $entry): bool => $this->sameConservativeKey($entry->citta, $input->city ?? '')
-                    && $this->sameConservativeKey($entry->pr, $input->province ?? ''),
+                fn (DirectoryEntry $entry): bool => $this->sameConservativeKey($entry->citta, $lookupCity)
+                    && $this->sameConservativeKey($entry->pr, $lookupProvince),
             ));
             if ($relevantEntries !== []) {
                 $supported[] = ['candidate' => $item['candidate'], 'entries' => $relevantEntries];
@@ -92,7 +97,9 @@ final readonly class AddressFieldNormalizer
             ? array_map(static fn (DirectoryEntry $entry): string => $entry->pr, $directoryEntries)
             : array_map(static fn (TerritorialEntry $entry): string => $entry->province, $territorialEntries);
 
-        $street = $this->fuzzyStreetCorrection($resolution) ?? $this->parsedField(
+        $street = $this->territorialRecoveryStreetCorrection($resolution, $relevant)
+            ?? $this->fuzzyStreetCorrection($resolution)
+            ?? $this->parsedField(
             NormalizedFieldName::STREET,
             array_map(static fn (array $item): string => $item['candidate']->streetName, $relevant),
             $input->vianum,
@@ -120,18 +127,29 @@ final readonly class AddressFieldNormalizer
             $directoryEntries !== [],
         );
 
-        $city = $this->sourceField(
-            NormalizedFieldName::CITY,
-            $input->city,
-            $this->uniqueDirectoryValues($cityEvidence),
-            false,
-        );
-        $province = $this->sourceField(
-            NormalizedFieldName::PROVINCE,
-            $input->province,
-            $this->uniqueDirectoryValues($provinceEvidence),
-            true,
-        );
+        $city = $resolution->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::AMBIGUOUS
+            ? new NormalizedField(
+                NormalizedFieldName::CITY,
+                $input->city,
+                null,
+                NormalizationOrigin::ORIGINAL,
+                NormalizedFieldStatus::AMBIGUOUS,
+                diagnostics: [AddressFieldDiagnostic::FUZZY_CITY_AMBIGUOUS],
+            )
+            : $this->geographicCorrectionField(NormalizedFieldName::CITY, $input->city, $resolution)
+            ?? $this->sourceField(
+                NormalizedFieldName::CITY,
+                $input->city,
+                $this->uniqueDirectoryValues($cityEvidence),
+                false,
+            );
+        $province = $this->geographicCorrectionField(NormalizedFieldName::PROVINCE, $input->province, $resolution)
+            ?? $this->sourceField(
+                NormalizedFieldName::PROVINCE,
+                $input->province,
+                $this->uniqueDirectoryValues($provinceEvidence),
+                true,
+            );
 
         return new AddressFieldNormalization(
             $input->vianum,
@@ -143,6 +161,49 @@ final readonly class AddressFieldNormalizer
             $province,
             $syntaxPreference,
             $parsedAddress,
+        );
+    }
+
+    private function geographicCorrectionField(
+        NormalizedFieldName $field,
+        ?string $original,
+        AddressResolution $resolution,
+    ): ?NormalizedField {
+        if ($resolution->status !== AddressResolutionStatus::RESOLVED || $resolution->geographicEvidence === null) {
+            return null;
+        }
+        $evidence = $resolution->geographicEvidence;
+        $proposed = $field === NormalizedFieldName::CITY ? $evidence->resolvedCity : $evidence->resolvedProvince;
+        $originalValue = $original ?? '';
+        if (trim($originalValue) === '') {
+            if ($field !== NormalizedFieldName::PROVINCE) {
+                return null;
+            }
+            $reason = FieldCorrectionReason::PROVINCE_COMPLETION;
+        } elseif ($this->sameConservativeKey($originalValue, $proposed)) {
+            return null;
+        } else {
+            $reason = match ($evidence->kind) {
+                AddressGeographicEvidenceKind::PROVINCE_COMPLETION => FieldCorrectionReason::PROVINCE_COMPLETION,
+                AddressGeographicEvidenceKind::PROVINCE_CORRECTION => FieldCorrectionReason::TERRITORIAL_PROVINCE_CORRECTION,
+                AddressGeographicEvidenceKind::FUZZY_CITY_CORRECTION => $field === NormalizedFieldName::CITY
+                    ? FieldCorrectionReason::FUZZY_CITY_CORRECTION
+                    : FieldCorrectionReason::FUZZY_CITY_PROVINCE_RECONCILIATION,
+                AddressGeographicEvidenceKind::TERRITORIAL_STREET_RECOVERY => $field === NormalizedFieldName::CITY
+                    ? FieldCorrectionReason::TERRITORIAL_CITY_RECOVERY
+                    : FieldCorrectionReason::TERRITORIAL_PROVINCE_RECOVERY,
+            };
+        }
+
+        $correction = new FieldCorrection($field, $originalValue, $proposed, $reason, NormalizationOrigin::DIRECTORY);
+
+        return new NormalizedField(
+            $field,
+            $original,
+            $proposed,
+            NormalizationOrigin::DIRECTORY,
+            NormalizedFieldStatus::DIRECTORY_CORRECTION,
+            $correction,
         );
     }
 
@@ -173,6 +234,37 @@ final readonly class AddressFieldNormalizer
             $original,
             $proposed,
             $reason,
+            NormalizationOrigin::DIRECTORY,
+        );
+
+        return new NormalizedField(
+            NormalizedFieldName::STREET,
+            $original,
+            $proposed,
+            NormalizationOrigin::DIRECTORY,
+            NormalizedFieldStatus::DIRECTORY_CORRECTION,
+            $correction,
+        );
+    }
+
+    /** @param list<array{candidate: AddressCandidate, entries: list<DirectoryEntry>}> $relevant */
+    private function territorialRecoveryStreetCorrection(AddressResolution $resolution, array $relevant): ?NormalizedField
+    {
+        $recovery = $resolution->geographicEvidence?->streetRecovery;
+        if ($resolution->status !== AddressResolutionStatus::RESOLVED || $recovery === null || $relevant === []) {
+            return null;
+        }
+
+        $original = $relevant[0]['candidate']->streetName;
+        $proposed = $recovery->matchedStreet;
+        if ($original === $proposed) {
+            return null;
+        }
+        $correction = new FieldCorrection(
+            NormalizedFieldName::STREET,
+            $original,
+            $proposed,
+            FieldCorrectionReason::TERRITORIAL_STREET_RECOVERY,
             NormalizationOrigin::DIRECTORY,
         );
 
@@ -290,7 +382,6 @@ final readonly class AddressFieldNormalizer
             if ($directoryValues === []) {
                 $diagnostics[] = AddressFieldDiagnostic::NO_DIRECTORY_EVIDENCE;
             }
-
             return $this->missing($field, $original, $diagnostics);
         }
 

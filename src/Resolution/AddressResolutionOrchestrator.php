@@ -12,9 +12,17 @@ use Normalizzatore\Address\AddressResolutionStrategy;
 use Normalizzatore\Address\AddressStrategyClassifier;
 use Normalizzatore\Address\AddressParser;
 use Normalizzatore\Address\StreetNameTokenizer;
+use Normalizzatore\City\CityCandidate;
+use Normalizzatore\City\FuzzyCityResolution;
+use Normalizzatore\City\FuzzyCityResolutionStatus;
+use Normalizzatore\City\FuzzyCityResolver;
 use Normalizzatore\Directory\AddressDirectoryInterface;
+use Normalizzatore\Directory\DirectoryEntry;
+use Normalizzatore\Directory\DirectoryKeyNormalizer;
+use Normalizzatore\Directory\FuzzyCityCandidateProvider;
 use Normalizzatore\Directory\FuzzyStreetCandidateProvider;
 use Normalizzatore\Directory\FuzzyStreetCandidateSetStatus;
+use Normalizzatore\Directory\TerritorialStreetRecoveryProvider;
 
 /** Coordinates the existing territorial and street-based resolution components. */
 final readonly class AddressResolutionOrchestrator
@@ -28,13 +36,16 @@ final readonly class AddressResolutionOrchestrator
         private ?FuzzyStreetCandidateProvider $fuzzyCandidateProvider = null,
         private FuzzyStreetMatcher $fuzzyStreetMatcher = new FuzzyStreetMatcher(),
         private StreetNameTokenizer $streetNameTokenizer = new StreetNameTokenizer(),
+        private ?FuzzyCityCandidateProvider $fuzzyCityCandidateProvider = null,
+        private FuzzyCityResolver $fuzzyCityResolver = new FuzzyCityResolver(),
+        private ?TerritorialStreetRecoveryProvider $territorialStreetRecoveryProvider = null,
+        private DirectoryKeyNormalizer $directoryKeyNormalizer = new DirectoryKeyNormalizer(),
     ) {
     }
 
     public function resolve(AddressInput $input, bool $fuzzy = false): AddressResolution
     {
-        $strategy = $this->strategyClassifier->classify($input);
-
+        $initialStrategy = $this->strategyClassifier->classify($input);
         // Source CAP is deliberately excluded: it must not cause an otherwise empty
         // operational address to be looked up or influence the outcome.
         if (trim($input->vianum) === ''
@@ -43,48 +54,163 @@ final readonly class AddressResolutionOrchestrator
             $territorialResolution = $this->territorialResolver->resolve([]);
 
             return new AddressResolution(
-                $strategy,
+                $initialStrategy,
                 AddressResolutionStatus::NO_MATCH,
                 [],
                 null,
-                $strategy === AddressResolutionStrategy::TERRITORIAL ? $territorialResolution : null,
+                $initialStrategy === AddressResolutionStrategy::TERRITORIAL ? $territorialResolution : null,
                 [],
                 [AddressResolutionDiagnostic::EMPTY_ADDRESS_INPUT],
             );
         }
 
+        $effectiveInput = $input;
+        $fuzzyCityResolution = null;
+        $geographicEvidence = null;
+        $sourceCity = trim($input->city ?? '');
+        if ($fuzzy && $sourceCity !== ''
+            && $initialStrategy !== AddressResolutionStrategy::STREET_BASED
+            && $this->fuzzyCityCandidateProvider !== null
+            && $this->directory->findTerritorialEntries($sourceCity) === []) {
+            $cityCandidates = $this->fuzzyCityCandidateProvider->findCityCandidates();
+            $fuzzyCityResolution = $this->fuzzyCityResolver->resolve($sourceCity, $input->province, $cityCandidates);
+            if ($fuzzyCityResolution->status === FuzzyCityResolutionStatus::MATCH) {
+                $match = $fuzzyCityResolution->match;
+                if ($match === null) {
+                    throw new LogicException('A fuzzy city MATCH must contain evidence.');
+                }
+                $effectiveInput = new AddressInput($input->vianum, $input->cap, $match->candidate->name, $match->candidate->province);
+                $geographicEvidence = new AddressGeographicEvidence(
+                    AddressGeographicEvidenceKind::FUZZY_CITY_CORRECTION,
+                    $input->city ?? '',
+                    $input->province ?? '',
+                    $match->candidate->name,
+                    $match->candidate->province,
+                    $match,
+                );
+            }
+        }
+
+        $strategy = $this->strategyClassifier->classify($effectiveInput);
+
         if ($strategy === AddressResolutionStrategy::TERRITORIAL) {
             $territorialResolution = $this->territorialResolver->resolve(
-                $this->directory->findTerritorialEntries($input->city ?? ''),
+                $this->directory->findTerritorialEntries($effectiveInput->city ?? ''),
             );
 
-            return $this->territorialResult($territorialResolution);
+            $provinces = $this->uniqueNormalizedValues(array_map(static fn ($entry): string => $entry->province, $territorialResolution->evidence));
+            $sourceProvince = trim($effectiveInput->province ?? '');
+            $provinceConflict = count($provinces) === 1 && $sourceProvince !== ''
+                && $this->directoryKeyNormalizer->normalize($sourceProvince) !== $provinces[0];
+            $sourceCap = trim($input->cap ?? '');
+            $sourceCapConflicts = preg_match('/\A[0-9]{5}\z/', $sourceCap) === 1
+                && !in_array($sourceCap, $territorialResolution->candidateCaps, true);
+            if ($provinceConflict && $sourceCapConflicts && trim($effectiveInput->vianum) !== '') {
+                if ($fuzzy) {
+                    $recovered = $this->recoverTerritorialStreet($input, $effectiveInput, $territorialResolution, $fuzzyCityResolution);
+                    if ($recovered !== null) {
+                        return $recovered;
+                    }
+                }
+
+                $territorialResolution = new TerritorialResolution(
+                    TerritorialResolutionStatus::INDETERMINATE,
+                    $territorialResolution->candidateCaps,
+                    null,
+                    $territorialResolution->evidence,
+                    [...$territorialResolution->diagnostics],
+                );
+
+                return $this->territorialResult(
+                    $territorialResolution,
+                    $fuzzyCityResolution,
+                    null,
+                    [AddressResolutionDiagnostic::TERRITORIAL_LOCATION_CONFLICT],
+                );
+            }
+
+            if (count($provinces) === 1 && ($sourceProvince === '' || $provinceConflict) && $territorialResolution->status === TerritorialResolutionStatus::RESOLVED) {
+                $resolvedCity = $this->uniqueDisplayValue(array_map(static fn ($entry): string => $entry->city, $territorialResolution->evidence))
+                    ?? ($effectiveInput->city ?? '');
+                if ($geographicEvidence === null) {
+                    $geographicEvidence = new AddressGeographicEvidence(
+                        $sourceProvince === '' ? AddressGeographicEvidenceKind::PROVINCE_COMPLETION : AddressGeographicEvidenceKind::PROVINCE_CORRECTION,
+                        $input->city ?? '',
+                        $input->province ?? '',
+                        $resolvedCity,
+                        $provinces[0],
+                    );
+                }
+            }
+
+            return $this->territorialResult($territorialResolution, $fuzzyCityResolution, $geographicEvidence);
         }
 
-        $parsedAddress = $this->addressParser->parse($input);
-        $candidateResolutions = [];
-        foreach ($parsedAddress->candidates as $candidate) {
-            $entries = $this->directory->findByStreetCityProvince(
-                $candidate->streetName,
-                $input->city ?? '',
-                $input->province ?? '',
-            );
-            $candidateResolutions[] = new StreetCandidateResolution(
-                $candidate,
-                $entries,
-                $this->capResolver->resolve($candidate, $entries),
-            );
+        $parsedAddress = $this->addressParser->parse($effectiveInput);
+        $candidateResolutions = $this->resolveStreetCandidates($parsedAddress->candidates, $effectiveInput);
+
+        if ($this->hasDirectoryEvidence($candidateResolutions)) {
+            return $this->streetResult($candidateResolutions, fuzzyCityResolution: $fuzzyCityResolution, geographicEvidence: $geographicEvidence);
         }
 
-        if (!$fuzzy || $this->hasDirectoryEvidence($candidateResolutions)) {
-            return $this->streetResult($candidateResolutions);
+        if ($parsedAddress->candidates === []) {
+            return $this->streetResult($candidateResolutions, fuzzyCityResolution: $fuzzyCityResolution, geographicEvidence: $geographicEvidence);
+        }
+
+        $territorialEntries = $this->directory->findTerritorialEntries($effectiveInput->city ?? '');
+        $provinceValues = $this->uniqueNormalizedValues(array_map(
+            static fn ($entry): string => $entry->province,
+            $territorialEntries,
+        ));
+        $lookupInput = $effectiveInput;
+        $pendingProvinceEvidence = null;
+        if (count($provinceValues) === 1) {
+            $expectedProvince = $provinceValues[0];
+            $sourceProvinceKey = $this->directoryKeyNormalizer->normalize($effectiveInput->province ?? '');
+            if ($sourceProvinceKey !== $expectedProvince) {
+                $displayCity = $this->uniqueDisplayValue(array_map(
+                    static fn ($entry): string => $entry->city,
+                    $territorialEntries,
+                )) ?? ($effectiveInput->city ?? '');
+                $lookupInput = new AddressInput($effectiveInput->vianum, $effectiveInput->cap, $displayCity, $expectedProvince);
+                $pendingProvinceEvidence = new AddressGeographicEvidence(
+                    $sourceProvinceKey === '' ? AddressGeographicEvidenceKind::PROVINCE_COMPLETION : AddressGeographicEvidenceKind::PROVINCE_CORRECTION,
+                    $input->city ?? '',
+                    $input->province ?? '',
+                    $displayCity,
+                    $expectedProvince,
+                );
+                if ($fuzzyCityResolution?->match !== null) {
+                    $pendingProvinceEvidence = new AddressGeographicEvidence(
+                        AddressGeographicEvidenceKind::FUZZY_CITY_CORRECTION,
+                        $input->city ?? '',
+                        $input->province ?? '',
+                        $displayCity,
+                        $expectedProvince,
+                        $fuzzyCityResolution->match,
+                    );
+                }
+                $retried = $this->resolveStreetCandidates($parsedAddress->candidates, $lookupInput);
+                if ($this->hasDirectoryEvidence($retried)) {
+                    return $this->streetResult(
+                        $retried,
+                        fuzzyCityResolution: $fuzzyCityResolution,
+                        geographicEvidence: $geographicEvidence ?? $pendingProvinceEvidence,
+                    );
+                }
+                $candidateResolutions = $retried;
+            }
+        }
+
+        if (!$fuzzy) {
+            return $this->streetResult($candidateResolutions, fuzzyCityResolution: $fuzzyCityResolution);
         }
 
         $selected = $this->selectFuzzyParserCandidate($parsedAddress->candidates, $parsedAddress->syntaxPreference?->preferredCandidate);
         if ($selected === null) {
             return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
                 AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
-            ));
+            ), $fuzzyCityResolution, $geographicEvidence);
         }
 
         $sourceStreet = $this->streetNameTokenizer->tokenize($selected->streetName);
@@ -92,15 +218,15 @@ final readonly class AddressResolutionOrchestrator
             return $this->streetResult($candidateResolutions, new FuzzyStreetAddressEvidence(
                 AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
                 parserCandidate: $selected,
-            ));
+            ), $fuzzyCityResolution, $geographicEvidence);
         }
         if ($this->fuzzyCandidateProvider === null) {
             throw new LogicException('Fuzzy street candidate provider is not configured.');
         }
 
         $candidateSet = $this->fuzzyCandidateProvider->findCandidates(new FuzzyStreetCandidateQuery(
-            $input->city ?? '',
-            $input->province ?? '',
+            $lookupInput->city ?? '',
+            $lookupInput->province ?? '',
             $sourceStreet,
         ));
         if ($candidateSet->status !== FuzzyStreetCandidateSetStatus::AVAILABLE) {
@@ -115,7 +241,7 @@ final readonly class AddressResolutionOrchestrator
                 $diagnostic,
                 $selected,
                 $candidateSet,
-            ));
+            ), $fuzzyCityResolution, $geographicEvidence);
         }
 
         $fuzzyResolution = $this->fuzzyStreetMatcher->match($sourceStreet, $candidateSet->candidates);
@@ -132,7 +258,7 @@ final readonly class AddressResolutionOrchestrator
                 $selected,
                 $candidateSet,
                 $fuzzyResolution,
-            ));
+            ), $fuzzyCityResolution, $geographicEvidence);
         }
 
         $matchedCandidate = $fuzzyResolution->match?->candidate;
@@ -160,7 +286,7 @@ final readonly class AddressResolutionOrchestrator
             $selected,
             $candidateSet,
             $fuzzyResolution,
-        ));
+        ), $fuzzyCityResolution, $geographicEvidence ?? $pendingProvinceEvidence);
     }
 
     /** @param list<StreetCandidateResolution> $candidateResolutions */
@@ -197,7 +323,12 @@ final readonly class AddressResolutionOrchestrator
             && $left->trailingInformation === $right->trailingInformation;
     }
 
-    private function territorialResult(TerritorialResolution $resolution): AddressResolution
+    private function territorialResult(
+        TerritorialResolution $resolution,
+        ?FuzzyCityResolution $fuzzyCityResolution = null,
+        ?AddressGeographicEvidence $geographicEvidence = null,
+        array $extraDiagnostics = [],
+    ): AddressResolution
     {
         $diagnostics = [];
         if ($resolution->status === TerritorialResolutionStatus::NO_MATCH) {
@@ -212,6 +343,12 @@ final readonly class AddressResolutionOrchestrator
         if ($resolution->status === TerritorialResolutionStatus::INDETERMINATE) {
             $diagnostics[] = AddressResolutionDiagnostic::INDETERMINATE_EVIDENCE;
         }
+        $cityDiagnostic = $this->fuzzyCityDiagnostic($fuzzyCityResolution);
+        if ($cityDiagnostic !== null) {
+            $diagnostics[] = $cityDiagnostic;
+        }
+        array_push($diagnostics, ...$extraDiagnostics);
+        $diagnostics = array_values(array_unique($diagnostics, SORT_REGULAR));
 
         return new AddressResolution(
             AddressResolutionStrategy::TERRITORIAL,
@@ -221,11 +358,19 @@ final readonly class AddressResolutionOrchestrator
             $resolution,
             [],
             $diagnostics,
+            null,
+            $fuzzyCityResolution,
+            $geographicEvidence,
         );
     }
 
     /** @param list<StreetCandidateResolution> $candidateResolutions */
-    private function streetResult(array $candidateResolutions, ?FuzzyStreetAddressEvidence $fuzzyEvidence = null): AddressResolution
+    private function streetResult(
+        array $candidateResolutions,
+        ?FuzzyStreetAddressEvidence $fuzzyEvidence = null,
+        ?FuzzyCityResolution $fuzzyCityResolution = null,
+        ?AddressGeographicEvidence $geographicEvidence = null,
+    ): AddressResolution
     {
         if (!array_is_list($candidateResolutions)) {
             throw new InvalidArgumentException('Street candidate resolutions must be provided as a list.');
@@ -245,6 +390,8 @@ final readonly class AddressResolutionOrchestrator
                 [],
                 $diagnostics,
                 $fuzzyEvidence,
+                $fuzzyCityResolution,
+                $geographicEvidence,
             );
         }
 
@@ -280,6 +427,13 @@ final readonly class AddressResolutionOrchestrator
 
         if ($fuzzyEvidence !== null) {
             $diagnostics[$fuzzyEvidence->diagnostic->value] = $fuzzyEvidence->diagnostic;
+        }
+        if ($geographicEvidence?->kind === AddressGeographicEvidenceKind::TERRITORIAL_STREET_RECOVERY) {
+            $diagnostics[AddressResolutionDiagnostic::TERRITORIAL_STREET_RECOVERY->value] = AddressResolutionDiagnostic::TERRITORIAL_STREET_RECOVERY;
+        }
+        $cityDiagnostic = $this->fuzzyCityDiagnostic($fuzzyCityResolution);
+        if ($cityDiagnostic !== null) {
+            $diagnostics[$cityDiagnostic->value] = $cityDiagnostic;
         }
 
         $caps = array_values($candidateCaps);
@@ -322,6 +476,230 @@ final readonly class AddressResolutionOrchestrator
             $candidateResolutions,
             $this->orderedDiagnostics($diagnostics),
             $fuzzyEvidence,
+            $fuzzyCityResolution,
+            $geographicEvidence,
+        );
+    }
+
+    /** @param list<AddressCandidate> $candidates @return list<StreetCandidateResolution> */
+    private function resolveStreetCandidates(array $candidates, AddressInput $input): array
+    {
+        $resolutions = [];
+        foreach ($candidates as $candidate) {
+            $entries = $this->directory->findByStreetCityProvince($candidate->streetName, $input->city ?? '', $input->province ?? '');
+            $resolutions[] = new StreetCandidateResolution($candidate, $entries, $this->capResolver->resolve($candidate, $entries));
+        }
+
+        return $resolutions;
+    }
+
+    /** @param list<string> $values @return list<string> */
+    private function uniqueNormalizedValues(array $values): array
+    {
+        $normalized = [];
+        foreach ($values as $value) {
+            $key = $this->directoryKeyNormalizer->normalize($value);
+            if ($key !== '') {
+                $normalized[$key] = $key;
+            }
+        }
+        $result = array_values($normalized);
+        sort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /** @param list<string> $values */
+    private function uniqueDisplayValue(array $values): ?string
+    {
+        $byKey = [];
+        foreach ($values as $value) {
+            $byKey[$this->directoryKeyNormalizer->normalize($value)][] = $value;
+        }
+        if (count($byKey) !== 1) {
+            return null;
+        }
+        $variants = array_values($byKey)[0];
+        sort($variants, SORT_STRING);
+
+        return $variants[0] ?? null;
+    }
+
+    private function fuzzyCityDiagnostic(?FuzzyCityResolution $resolution): ?AddressResolutionDiagnostic
+    {
+        if ($resolution === null) {
+            return null;
+        }
+
+        return match ($resolution->status) {
+            FuzzyCityResolutionStatus::MATCH => AddressResolutionDiagnostic::FUZZY_CITY_MATCH,
+            FuzzyCityResolutionStatus::AMBIGUOUS => AddressResolutionDiagnostic::FUZZY_CITY_AMBIGUOUS,
+            FuzzyCityResolutionStatus::NO_MATCH => AddressResolutionDiagnostic::FUZZY_CITY_NO_MATCH,
+            FuzzyCityResolutionStatus::NOT_APPLICABLE => AddressResolutionDiagnostic::FUZZY_CITY_NOT_APPLICABLE,
+        };
+    }
+
+    private function recoverTerritorialStreet(
+        AddressInput $sourceInput,
+        AddressInput $effectiveInput,
+        TerritorialResolution $territorialResolution,
+        ?FuzzyCityResolution $fuzzyCityResolution,
+    ): ?AddressResolution {
+        if ($this->territorialStreetRecoveryProvider === null) {
+            return null;
+        }
+
+        $parsed = $this->addressParser->parse($effectiveInput);
+        $candidate = $this->selectFuzzyParserCandidate($parsed->candidates, $parsed->syntaxPreference?->preferredCandidate);
+        if ($candidate === null) {
+            return null;
+        }
+        $territorialProvinces = $this->uniqueNormalizedValues(array_map(
+            static fn ($entry): string => $entry->province,
+            $territorialResolution->evidence,
+        ));
+        $territorialCity = $this->uniqueDisplayValue(array_map(
+            static fn ($entry): string => $entry->city,
+            $territorialResolution->evidence,
+        ));
+        $entries = [];
+        if (count($territorialProvinces) === 1 && $territorialCity !== null) {
+            // An exact source city plus its independently established province is
+            // stronger than either source province or source CAP on its own.
+            $entries = $this->findRecoveryEntriesInLocality(
+                $candidate->streetName,
+                $territorialCity,
+                $territorialProvinces[0],
+            );
+            if ($entries !== []) {
+                $localResolution = $this->capResolver->resolve($candidate, $entries);
+                if ($localResolution->status !== CapResolutionStatus::RESOLVED) {
+                    return null;
+                }
+
+                return $this->buildTerritorialStreetRecovery(
+                    $sourceInput,
+                    $candidate,
+                    $entries,
+                    $localResolution,
+                    [$territorialCity . ' / ' . $territorialProvinces[0]],
+                    $fuzzyCityResolution,
+                );
+            }
+        }
+
+        // If the street is absent from the corrected source locality, the explicit
+        // province can bound a diagnostic recovery search. The source CAP is not
+        // available to candidate generation, scoring or tie breaking.
+        $entries = $this->territorialStreetRecoveryProvider->findByStreetAcrossLocalities(
+            $candidate->streetName,
+            $sourceInput->province,
+        );
+        if ($entries === []) {
+            return null;
+        }
+
+        /** @var array<string, list<DirectoryEntry>> $byLocality */
+        $byLocality = [];
+        $displayLocalities = [];
+        foreach ($entries as $entry) {
+            $cityKey = $this->directoryKeyNormalizer->normalize($entry->citta);
+            $provinceKey = $this->directoryKeyNormalizer->normalize($entry->pr);
+            $key = $cityKey . "\0" . $provinceKey;
+            $byLocality[$key][] = $entry;
+            $displayLocalities[$key] = $entry->citta . ' / ' . $entry->pr;
+        }
+        ksort($byLocality, SORT_STRING);
+
+        $plausible = [];
+        $considered = [];
+        foreach ($byLocality as $key => $localityEntries) {
+            $resolution = $this->capResolver->resolve($candidate, $localityEntries);
+            if (in_array($resolution->status, [CapResolutionStatus::RESOLVED, CapResolutionStatus::AMBIGUOUS, CapResolutionStatus::INDETERMINATE], true)) {
+                $plausible[] = [$key, $localityEntries, $resolution];
+                $considered[] = $displayLocalities[$key];
+            }
+        }
+        if (count($plausible) !== 1 || $plausible[0][2]->status !== CapResolutionStatus::RESOLVED) {
+            return null;
+        }
+
+        [, $matchedEntries, $capResolution] = $plausible[0];
+        return $this->buildTerritorialStreetRecovery(
+            $sourceInput,
+            $candidate,
+            $matchedEntries,
+            $capResolution,
+            $considered,
+            $fuzzyCityResolution,
+        );
+    }
+
+    /**
+     * Try the exact street key first, then formatting variants that differ only
+     * by optional whitespace immediately after an apostrophe. This handles legacy
+     * directory spellings such as "S' ISCALA" without making them street-fuzzy
+     * candidates or allowing another locality to win over an existing local name.
+     *
+     * @return list<DirectoryEntry>
+     */
+    private function findRecoveryEntriesInLocality(string $street, string $city, string $province): array
+    {
+        $variants = [$street];
+        $variants[] = preg_replace("/(['’])\\s+/u", '$1', $street) ?? $street;
+        $variants[] = preg_replace("/(['’])(?=\\S)/u", '$1 ', $street) ?? $street;
+        $seen = [];
+        foreach ($variants as $variant) {
+            $key = $this->directoryKeyNormalizer->normalize($variant);
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $entries = $this->directory->findByStreetCityProvince($variant, $city, $province);
+            if ($entries !== []) {
+                return $entries;
+            }
+        }
+
+        return [];
+    }
+
+    /** @param list<DirectoryEntry> $matchedEntries @param list<string> $considered */
+    private function buildTerritorialStreetRecovery(
+        AddressInput $sourceInput,
+        AddressCandidate $candidate,
+        array $matchedEntries,
+        CapResolution $capResolution,
+        array $considered,
+        ?FuzzyCityResolution $fuzzyCityResolution,
+    ): ?AddressResolution {
+        $matchedCity = $this->uniqueDisplayValue(array_map(static fn (DirectoryEntry $entry): string => $entry->citta, $matchedEntries));
+        $matchedProvince = $this->uniqueDisplayValue(array_map(static fn (DirectoryEntry $entry): string => $entry->pr, $matchedEntries));
+        if ($matchedCity === null || $matchedProvince === null) {
+            return null;
+        }
+        $recovery = new TerritorialStreetRecoveryEvidence(
+            $sourceInput->city ?? '',
+            $sourceInput->province ?? '',
+            $matchedCity,
+            $matchedProvince,
+            $this->uniqueDisplayValue(array_map(static fn (DirectoryEntry $entry): string => $entry->vianum, $matchedEntries)) ?? $candidate->streetName,
+            $considered,
+        );
+        $geographicEvidence = new AddressGeographicEvidence(
+            AddressGeographicEvidenceKind::TERRITORIAL_STREET_RECOVERY,
+            $sourceInput->city ?? '',
+            $sourceInput->province ?? '',
+            $matchedCity,
+            $matchedProvince,
+            streetRecovery: $recovery,
+        );
+        $streetResolution = new StreetCandidateResolution($candidate, $matchedEntries, $capResolution);
+
+        return $this->streetResult(
+            [$streetResolution],
+            fuzzyCityResolution: $fuzzyCityResolution,
+            geographicEvidence: $geographicEvidence,
         );
     }
 

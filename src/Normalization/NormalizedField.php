@@ -33,7 +33,7 @@ final readonly class NormalizedField
             throw new InvalidArgumentException('Field diagnostics must be unique.');
         }
         if ($correction !== null && ($correction->field !== $field
-            || $correction->originalValue !== $originalValue
+            || $correction->originalValue !== ($originalValue ?? '')
             || $correction->proposedValue !== $normalizedValue)) {
             throw new InvalidArgumentException('Field correction must match its field values.');
         }

@@ -1,0 +1,13 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Normalizzatore\Resolution;
+
+enum AddressGeographicEvidenceKind: string
+{
+    case PROVINCE_COMPLETION = 'PROVINCE_COMPLETION';
+    case PROVINCE_CORRECTION = 'PROVINCE_CORRECTION';
+    case FUZZY_CITY_CORRECTION = 'FUZZY_CITY_CORRECTION';
+    case TERRITORIAL_STREET_RECOVERY = 'TERRITORIAL_STREET_RECOVERY';
+}

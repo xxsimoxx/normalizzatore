@@ -57,7 +57,7 @@ final class AddressProcessorTest extends TestCase
     {
         $directory = $this->directory();
         $processor = $this->processor($directory);
-        $input = new AddressInput('Via Roma 50', '07026', 'Olbia', 'XX');
+        $input = new AddressInput('Via Roma 50', '07026', 'Olbia', 'SS');
 
         $result = $processor->process($input);
 

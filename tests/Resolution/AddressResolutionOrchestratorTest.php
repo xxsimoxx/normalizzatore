@@ -32,7 +32,7 @@ use PHPUnit\Framework\TestCase;
 
 final class AddressResolutionOrchestratorTest extends TestCase
 {
-    public function testTerritorialPathResolvesFromCityOnlyAndPreservesTerritorialEvidence(): void
+    public function testTerritorialProvinceConflictWithUnverifiedStreetAbstains(): void
     {
         $directory = new FakeAddressDirectory(territorial: [
             new TerritorialEntry('OLBIA', 'SS', '07026', 4),
@@ -42,10 +42,11 @@ final class AddressResolutionOrchestratorTest extends TestCase
         $result = $orchestrator->resolve(new AddressInput('ignored street', '99999', 'Olbia', 'XX'));
 
         self::assertSame(AddressResolutionStrategy::TERRITORIAL, $result->strategy);
-        self::assertSame(AddressResolutionStatus::RESOLVED, $result->status);
-        self::assertSame('07026', $result->resolvedCap);
+        self::assertSame(AddressResolutionStatus::INDETERMINATE, $result->status);
+        self::assertNull($result->resolvedCap);
         self::assertSame(['07026'], $result->candidateCaps);
-        self::assertSame(TerritorialResolutionStatus::RESOLVED, $result->territorialResolution?->status);
+        self::assertSame(TerritorialResolutionStatus::INDETERMINATE, $result->territorialResolution?->status);
+        self::assertContains(AddressResolutionDiagnostic::TERRITORIAL_LOCATION_CONFLICT, $result->diagnostics);
         self::assertSame('OLBIA', $result->territorialResolution?->evidence[0]->city);
         self::assertSame([['Olbia']], $directory->territorialCalls);
         self::assertSame([], $directory->streetCalls);
@@ -111,7 +112,7 @@ final class AddressResolutionOrchestratorTest extends TestCase
         self::assertContains(AddressResolutionDiagnostic::NO_STREET_MATCH, $noMatch->diagnostics);
         self::assertSame(AddressResolutionStatus::NO_MATCH, $noCandidates->status);
         self::assertContains(AddressResolutionDiagnostic::NO_ADDRESS_CANDIDATES, $noCandidates->diagnostics);
-        self::assertSame([], $directory->territorialCalls);
+        self::assertSame([['Roma']], $directory->territorialCalls);
     }
 
     public function testDifferentStreetCandidatesWithSameCapResolveAndAreReported(): void
@@ -180,7 +181,7 @@ final class AddressResolutionOrchestratorTest extends TestCase
         self::assertContains(AddressResolutionDiagnostic::MULTIPLE_STREET_CAPS, $ambiguous->diagnostics);
     }
 
-    public function testTerritorialResultDoesNotDependOnSourceCapOrProvince(): void
+    public function testTerritorialResultIgnoresSourceCapButFlagsProvinceConflictWhenStreetIsPresent(): void
     {
         $orchestrator = $this->orchestrator(new FakeAddressDirectory(territorial: [
             new TerritorialEntry('OLBIA', 'SS', '07026', 1),
@@ -188,9 +189,12 @@ final class AddressResolutionOrchestratorTest extends TestCase
         $first = $orchestrator->resolve(new AddressInput('', '07026', 'Olbia', 'SS'));
         $second = $orchestrator->resolve(new AddressInput('unrelated', '99999', 'Olbia', 'XX'));
 
-        self::assertSame($first->status, $second->status);
+        self::assertSame(AddressResolutionStatus::RESOLVED, $first->status);
+        self::assertSame(AddressResolutionStatus::INDETERMINATE, $second->status);
         self::assertSame($first->candidateCaps, $second->candidateCaps);
-        self::assertSame($first->resolvedCap, $second->resolvedCap);
+        self::assertSame('07026', $first->resolvedCap);
+        self::assertNull($second->resolvedCap);
+        self::assertContains(AddressResolutionDiagnostic::TERRITORIAL_LOCATION_CONFLICT, $second->diagnostics);
     }
 
     public function testAmbiguousAndResolvedCandidatesRemainAmbiguousInEitherOrder(): void
@@ -401,7 +405,7 @@ final class AddressResolutionOrchestratorTest extends TestCase
                 "SELECT COUNT(*) FROM sqlite_temp_master WHERE name = 'territorial_directory_entries'",
             )->fetchColumn());
 
-            $territorial = $orchestrator->resolve(new AddressInput('ignored', null, 'Olbia', 'XX'));
+            $territorial = $orchestrator->resolve(new AddressInput('', null, 'Olbia', 'SS'));
 
             self::assertSame(AddressResolutionStrategy::STREET_BASED, $street->strategy);
             self::assertSame(AddressResolutionStatus::RESOLVED, $street->status);

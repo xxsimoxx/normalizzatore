@@ -162,14 +162,15 @@ final class FuzzyStreetPipelineTest extends TestCase
         self::assertSame(AddressResolutionStatus::RESOLVED, $result->resolution->status);
     }
 
-    public function testProvinceConflictIsDiagnosticOnlyAndEmptyProvinceRequiresUniqueLocality(): void
+    public function testUniqueCityEvidenceRepairsWrongProvinceBeforeFuzzyStreetLookupAndEmptyProvinceRequiresUniqueLocality(): void
     {
         $processor = $this->processor();
         $conflict = $processor->process(new AddressInput('VIA CAPUCCINA 5', '', 'MILANO', 'XX'), true);
-        self::assertSame(AddressResolutionDiagnostic::FUZZY_PROVINCE_CONFLICT, $conflict->resolution->fuzzyStreetEvidence?->diagnostic);
-        self::assertSame(FuzzyStreetCandidateSetStatus::PROVINCE_CONFLICT, $conflict->resolution->fuzzyStreetEvidence?->candidateSet?->status);
-        self::assertSame([], $conflict->resolution->fuzzyStreetEvidence?->candidateSet?->candidates);
-        self::assertSame(AddressResolutionStatus::NO_MATCH, $conflict->resolution->status);
+        self::assertSame(AddressResolutionDiagnostic::FUZZY_TYPO_MATCH, $conflict->resolution->fuzzyStreetEvidence?->diagnostic);
+        self::assertSame(FuzzyStreetCandidateSetStatus::AVAILABLE, $conflict->resolution->fuzzyStreetEvidence?->candidateSet?->status);
+        self::assertSame('MI', $conflict->resolution->fuzzyStreetEvidence?->candidateSet?->provinceKey);
+        self::assertSame(AddressResolutionStatus::RESOLVED, $conflict->resolution->status);
+        self::assertSame(FieldCorrectionReason::TERRITORIAL_PROVINCE_CORRECTION, $conflict->fieldNormalization->province->correction?->reason);
 
         $unique = $processor->process(new AddressInput('VIA CAPUCCINA 5', '', 'MILANO', ''), true);
         self::assertSame(AddressResolutionStatus::RESOLVED, $unique->resolution->status);
