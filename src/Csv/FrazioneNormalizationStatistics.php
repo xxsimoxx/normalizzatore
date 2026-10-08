@@ -41,7 +41,7 @@ final class FrazioneNormalizationStatistics
 
     public function toText(): string
     {
-        $text = "Frazioni (lookup esatto del nome; nessun fuzzy frazioni):\n";
+        $text = "Frazioni (conteggi lookup esatto; evidence fuzzy frazione nella diagnostica):\n";
         foreach ($this->counts() as $type => $counts) {
             $text .= sprintf("  %s: lookup %d, riconosciute %d, applicate %d, ambigue %d, non verificabili %d, non trovate %d\n",
                 $type, $counts['lookup'], $counts['match'], $counts['applied'], $counts['ambiguous'], $counts['unverified'], $counts['no_match']);

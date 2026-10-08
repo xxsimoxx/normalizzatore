@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use Normalizzatore\Address\AddressResolutionStrategy;
 use Normalizzatore\City\FuzzyCityResolution;
 use Normalizzatore\Frazione\FrazioneResolution;
+use Normalizzatore\Frazione\FuzzyFrazioneResolution;
+use Normalizzatore\Frazione\FuzzyFrazioneResolutionStatus;
 
 /** Common, typed result of either address-resolution path. */
 final readonly class AddressResolution
@@ -29,6 +31,7 @@ final readonly class AddressResolution
         public ?FuzzyCityResolution $fuzzyCityResolution = null,
         public ?AddressGeographicEvidence $geographicEvidence = null,
         public ?FrazioneResolution $frazioneResolution = null,
+        public ?FuzzyFrazioneResolution $fuzzyFrazioneResolution = null,
     ) {
         foreach ([$candidateCaps, $streetCandidateResolutions, $diagnostics] as $list) {
             if (!array_is_list($list)) {
@@ -77,6 +80,15 @@ final readonly class AddressResolution
             && $geographicEvidence->kind === AddressGeographicEvidenceKind::FUZZY_CITY_CORRECTION
             && $fuzzyCityResolution->match !== $geographicEvidence->fuzzyCityMatch) {
             throw new InvalidArgumentException('Applied city correction must reference its fuzzy city match evidence.');
+        }
+        if ($fuzzyFrazioneResolution?->status === FuzzyFrazioneResolutionStatus::APPLIED
+            && ($status !== AddressResolutionStatus::RESOLVED
+                || $geographicEvidence?->kind !== AddressGeographicEvidenceKind::FUZZY_FRAZIONE_TO_COMUNE)) {
+            throw new InvalidArgumentException('An applied fuzzy fraction requires a resolved address and geographic evidence.');
+        }
+        if ($geographicEvidence?->kind === AddressGeographicEvidenceKind::FUZZY_FRAZIONE_TO_COMUNE
+            && $fuzzyFrazioneResolution?->status !== FuzzyFrazioneResolutionStatus::APPLIED) {
+            throw new InvalidArgumentException('Fuzzy fraction geographic evidence requires an applied fuzzy fraction result.');
         }
 
         if ($status === AddressResolutionStatus::RESOLVED

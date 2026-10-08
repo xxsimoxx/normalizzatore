@@ -27,6 +27,7 @@ final class AddressProcessorFactory
         $projectRoot = rtrim($projectRoot, DIRECTORY_SEPARATOR);
         $catalog = CapizzatedCityCatalog::fromTsvFile($projectRoot . '/resources/capizzated-cities.tsv');
         $directory = new SqliteAddressDirectory($projectRoot . '/var/archi_cap.sqlite');
+        $frazioneCatalog = new FrazioneCatalog($projectRoot . '/resources/frazioni.tsv');
         $orchestrator = new AddressResolutionOrchestrator(
             strategyClassifier: new AddressStrategyClassifier($catalog),
             addressParser: new AddressParser(),
@@ -39,8 +40,9 @@ final class AddressProcessorFactory
             fuzzyCityCandidateProvider: $directory,
             fuzzyCityResolver: new FuzzyCityResolver(),
             territorialStreetRecoveryProvider: $directory,
-            frazioneCatalog: new FrazioneCatalog($projectRoot . '/resources/frazioni.tsv'),
+            frazioneCatalog: $frazioneCatalog,
             frazioneResolver: new FrazioneResolver(),
+            fuzzyFrazioneCandidateProvider: $frazioneCatalog,
         );
 
         return new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());

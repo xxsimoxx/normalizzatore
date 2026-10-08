@@ -15,6 +15,7 @@ use Normalizzatore\Directory\SqliteAddressDirectory;
 use Normalizzatore\Frazione\FrazioneCatalog;
 use Normalizzatore\Frazione\FrazioneResolutionStatus;
 use Normalizzatore\Frazione\FrazioneStreetEvidenceStatus;
+use Normalizzatore\Frazione\FuzzyFrazioneResolutionStatus;
 use Normalizzatore\Normalization\AddressFieldNormalizer;
 use Normalizzatore\Normalization\FieldCorrectionReason;
 use Normalizzatore\Resolution\AddressResolutionOrchestrator;
@@ -61,6 +62,22 @@ final class FrazionePipelineTest extends TestCase
         self::assertStringContainsString('Centro abitato', $this->diagnosticText($enabled));
         self::assertSame('RESOLVED', $enabledWithFuzzy->resolution->status->name);
         self::assertSame('Rovigo', $enabledWithFuzzy->fieldNormalization->city->normalizedValue);
+    }
+
+    public function testSourceCapDoesNotInfluenceFuzzyFrazioneMatchOrResolution(): void
+    {
+        $processor = $this->processor("CAP\tCOMUNE\tFRAZIONE\tPROVINCIA\tTIPO\n45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n");
+        $input = static fn (string $cap): AddressInput => new AddressInput('VIA ROMA 1', $cap, 'FIENILE DEL TURCO', 'RO');
+
+        $validCap = $processor->process($input('45100'), true, true);
+        $wrongCap = $processor->process($input('99999'), true, true);
+
+        self::assertSame('FIENIL DEL TURCO', $validCap->resolution->fuzzyFrazioneResolution?->selectedCandidate?->canonicalName);
+        self::assertSame($validCap->resolution->fuzzyFrazioneResolution?->selectedCandidate?->canonicalName, $wrongCap->resolution->fuzzyFrazioneResolution?->selectedCandidate?->canonicalName);
+        self::assertSame($validCap->resolution->status, $wrongCap->resolution->status);
+        self::assertSame('45100', $wrongCap->resolution->resolvedCap);
+        self::assertSame('MISMATCH', $wrongCap->capVerification->status->name);
+        self::assertSame('Rovigo', $wrongCap->fieldNormalization->city->normalizedValue);
     }
 
     public function testGrignanoPolesineStillResolvesToRovigo(): void
@@ -305,6 +322,139 @@ final class FrazionePipelineTest extends TestCase
         self::assertSame(FrazioneResolutionStatus::INDETERMINATE, $result->resolution->frazioneResolution?->status);
         self::assertSame('SOURCE_PROVINCE_CONFLICT', $result->resolution->frazioneResolution?->diagnostic?->value);
         self::assertSame(FrazioneStreetEvidenceStatus::STREET_NOT_FOUND, $result->resolution->frazioneResolution?->streetEvidence?->status);
+        self::assertNull($result->fieldNormalization->city->correction);
+    }
+
+    public function testFuzzyFrazioneAppliesOnlyAfterExactStreetAndCivicCorroboration(): void
+    {
+        $processor = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA ROMA', '45100', 'Rovigo', 'RO', 'T', '1', '99')],
+            "45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n",
+            [new CapizzatedCity('Rovigo', 'RO')],
+        );
+        $result = $processor->process(new AddressInput('VIA ROMA 8', '99999', 'FIENILE DEL TURCO', 'RO'), true, true);
+
+        self::assertSame('RESOLVED', $result->resolution->status->name);
+        self::assertSame('45100', $result->normalizedCap());
+        self::assertSame('Rovigo', $result->fieldNormalization->city->normalizedValue);
+        self::assertSame(FieldCorrectionReason::FUZZY_FRAZIONE_TO_COMUNE, $result->fieldNormalization->city->correction?->reason);
+        self::assertSame(FuzzyFrazioneResolutionStatus::APPLIED, $result->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame(FuzzyFrazioneResolutionStatus::APPLIED->value, $result->resolution->fuzzyFrazioneResolution?->status->value);
+        self::assertSame(FrazioneStreetEvidenceStatus::CIVIC_COMPATIBLE, $result->resolution->fuzzyFrazioneResolution?->streetEvidence?->status);
+        self::assertSame('MISMATCH', $result->capVerification->status->name);
+    }
+
+    public function testFuzzyFrazioneProducesSuggestionWhenStreetIsNotInCandidateComune(): void
+    {
+        $processor = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA ROMA', '45100', 'Rovigo', 'RO', 'T', '1', '99')],
+            "45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n",
+            [new CapizzatedCity('Rovigo', 'RO')],
+        );
+        $result = $processor->process(new AddressInput('VIA SCONOSCIUTA 8', '45100', 'FIENILE DEL TURCO', 'RO'), true, true);
+        $serialized = (new \Normalizzatore\Csv\AddressProcessingResultSerializer())->serialize($result);
+
+        self::assertSame(FuzzyFrazioneResolutionStatus::SUGGESTED, $result->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('STREET_NOT_VERIFIED', $result->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
+        self::assertNotSame('RESOLVED', $result->resolution->status->name);
+        self::assertNull($result->fieldNormalization->city->correction);
+        self::assertSame('', $serialized[4]);
+        self::assertStringContainsString('SUGGERIMENTO_CITTA:', $serialized[8]);
+        self::assertStringContainsString('FRAZIONE_FUZZY:SUGGESTED', $serialized[9]);
+        self::assertStringContainsString('FIENIL DEL TURCO', $serialized[9]);
+        self::assertStringContainsString('Centro abitato', $serialized[9]);
+    }
+
+    public function testFuzzyFrazioneDoesNotApplyWithoutProvinceOrWhenCivicIsIncompatible(): void
+    {
+        $processor = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA ROMA', '45100', 'Rovigo', 'RO', 'T', '1', '9')],
+            "45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n",
+            [new CapizzatedCity('Rovigo', 'RO')],
+        );
+        $missingProvince = $processor->process(new AddressInput('VIA ROMA 8', '', 'FIENILE DEL TURCO', ''), true, true);
+        $badCivic = $processor->process(new AddressInput('VIA ROMA 20', '', 'FIENILE DEL TURCO', 'RO'), true, true);
+
+        self::assertSame(FuzzyFrazioneResolutionStatus::SUGGESTED, $missingProvince->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('SOURCE_PROVINCE_MISSING_OR_INVALID', $missingProvince->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
+        self::assertNull($missingProvince->fieldNormalization->city->correction);
+        self::assertSame(FuzzyFrazioneResolutionStatus::SUGGESTED, $badCivic->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('CIVIC_NOT_COMPATIBLE', $badCivic->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
+        self::assertNull($badCivic->fieldNormalization->city->correction);
+    }
+
+    public function testFuzzyFrazioneRequiresProvinceAgreementAndKeepsNominalAmbiguity(): void
+    {
+        $crossProvince = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA ROMA', '45100', 'Rovigo', 'RO', 'T', '1', '99')],
+            "45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n",
+            [new CapizzatedCity('Rovigo', 'RO')],
+        );
+        $conflict = $crossProvince->process(new AddressInput('VIA ROMA 8', '', 'FIENILE DEL TURCO', 'PD'), true, true);
+        self::assertSame(FuzzyFrazioneResolutionStatus::INDETERMINATE, $conflict->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('NO_PROVINCIAL_CANDIDATE', $conflict->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
+        self::assertNull($conflict->fieldNormalization->city->correction);
+
+        $ambiguous = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA ROMA', '45100', 'Rovigo', 'RO', 'T', '1', '99')],
+            "45100\tRovigo\tFienil del Turco\tRO\tCentro abitato\n45100\tRovigo\tFienile del Turci\tRO\tNucleo abitato\n",
+            [new CapizzatedCity('Rovigo', 'RO')],
+        )->process(new AddressInput('VIA ROMA 8', '45100', 'FIENILE DEL TURCO', 'RO'), true, true);
+        self::assertSame(FuzzyFrazioneResolutionStatus::AMBIGUOUS, $ambiguous->resolution->fuzzyFrazioneResolution?->status);
+        self::assertCount(2, $ambiguous->resolution->fuzzyFrazioneResolution?->candidates);
+        self::assertNull($ambiguous->fieldNormalization->city->correction);
+    }
+
+    public function testProvinceScopesNominalFractionCandidatesButDoesNotApplyWithoutStreetEvidence(): void
+    {
+        $processor = $this->processorFor(
+            [SqliteDirectoryFixture::row('VIA DELLE CASE', '35040', 'Boara Pisani', 'PD', 'T', '1', '99')],
+            "35040\tBoara Pisani\tOnari\tPD\tNucleo abitato\n"
+                . "31059\tZero Branco\tOnaro\tTV\tNucleo abitato\n",
+        );
+
+        $result = $processor->process(new AddressInput('VIA INESISTENTE 8', '', 'ONARA', 'PD'), true, true);
+
+        self::assertSame(FuzzyFrazioneResolutionStatus::SUGGESTED, $result->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('ONARI', $result->resolution->fuzzyFrazioneResolution?->selectedCandidate?->canonicalName);
+        self::assertSame('PD', $result->resolution->fuzzyFrazioneResolution?->territorialResolution?->provincia);
+        self::assertNull($result->fieldNormalization->city->correction);
+        self::assertNotSame('RESOLVED', $result->resolution->status->name);
+    }
+
+    public function testFuzzyFrazioneDoesNotRunWhenFuzzyCityAlreadyMatches(): void
+    {
+        $processor = $this->processorForWithFuzzyCity(
+            [SqliteDirectoryFixture::row('VIA ROMA', '35122', 'Padova', 'PD', 'T', '1', '99')],
+            "35122\tPadova\tPADOVI\tPD\tNucleo abitato\n",
+            [new CapizzatedCity('Padova', 'PD')],
+            [new CityCandidate('Padova', 'PADOVA', 'PD')],
+        );
+        $result = $processor->process(new AddressInput('VIA ROMA 8', '35122', 'PADOV', 'PD'), true, true);
+
+        self::assertSame(\Normalizzatore\City\FuzzyCityResolutionStatus::MATCH, $result->resolution->fuzzyCityResolution?->status);
+        self::assertSame(FuzzyFrazioneResolutionStatus::BLOCKED, $result->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('FUZZY_CITY_PRECEDENCE', $result->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
+        self::assertNotSame(FieldCorrectionReason::FUZZY_FRAZIONE_TO_COMUNE, $result->fieldNormalization->city->correction?->reason);
+    }
+
+    public function testAmbiguousFuzzyCityCannotBeDisambiguatedByFuzzyFrazione(): void
+    {
+        $processor = $this->processorForWithFuzzyCity(
+            [
+                SqliteDirectoryFixture::row('VIA ROMA', '00100', 'Monta', 'PD', 'T', '1', '99'),
+                SqliteDirectoryFixture::row('VIA ROMA', '00100', 'Santa', 'PD', 'T', '1', '99'),
+            ],
+            "00100\tMonta\tManto\tPD\tNucleo abitato\n",
+            [],
+            [new CityCandidate('Monta', 'MONTA', 'PD'), new CityCandidate('Santa', 'SANTA', 'PD')],
+        );
+
+        $result = $processor->process(new AddressInput('VIA ROMA 8', '', 'MANTA', 'PD'), true, true);
+
+        self::assertSame(\Normalizzatore\City\FuzzyCityResolutionStatus::AMBIGUOUS, $result->resolution->fuzzyCityResolution?->status);
+        self::assertSame(FuzzyFrazioneResolutionStatus::BLOCKED, $result->resolution->fuzzyFrazioneResolution?->status);
+        self::assertSame('FUZZY_CITY_AMBIGUOUS', $result->resolution->fuzzyFrazioneResolution?->diagnostic?->value);
         self::assertNull($result->fieldNormalization->city->correction);
     }
 

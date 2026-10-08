@@ -32,4 +32,10 @@ enum AddressResolutionDiagnostic: string
     case FRAZIONE_RECOGNIZED = 'frazione_riconosciuta';
     case FRAZIONE_AMBIGUOUS = 'frazione_ambigua';
     case FRAZIONE_UNVERIFIED = 'frazione_non_verificabile';
+    case FUZZY_FRAZIONE_APPLIED = 'fuzzy_frazione_applicato';
+    case FUZZY_FRAZIONE_SUGGESTED = 'fuzzy_frazione_suggerito';
+    case FUZZY_FRAZIONE_AMBIGUOUS = 'fuzzy_frazione_ambiguo';
+    case FUZZY_FRAZIONE_UNVERIFIED = 'fuzzy_frazione_non_verificabile';
+    case FUZZY_FRAZIONE_NO_MATCH = 'fuzzy_frazione_non_trovato';
+    case FUZZY_FRAZIONE_BLOCKED = 'fuzzy_frazione_bloccato';
 }

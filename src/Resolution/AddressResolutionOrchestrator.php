@@ -31,6 +31,13 @@ use Normalizzatore\Frazione\FrazioneResolver;
 use Normalizzatore\Frazione\FrazioneStreetEvidence;
 use Normalizzatore\Frazione\FrazioneStreetEvidenceStatus;
 use Normalizzatore\Frazione\FrazioneTypeGroup;
+use Normalizzatore\Frazione\FuzzyFrazioneCandidate;
+use Normalizzatore\Frazione\FuzzyFrazioneCandidateProvider;
+use Normalizzatore\Frazione\FuzzyFrazioneMatchStatus;
+use Normalizzatore\Frazione\FuzzyFrazioneMatcher;
+use Normalizzatore\Frazione\FuzzyFrazioneResolution;
+use Normalizzatore\Frazione\FuzzyFrazioneResolutionDiagnostic;
+use Normalizzatore\Frazione\FuzzyFrazioneResolutionStatus;
 
 /** Coordinates the existing territorial and street-based resolution components. */
 final readonly class AddressResolutionOrchestrator
@@ -50,6 +57,8 @@ final readonly class AddressResolutionOrchestrator
         private DirectoryKeyNormalizer $directoryKeyNormalizer = new DirectoryKeyNormalizer(),
         private ?FrazioneCatalog $frazioneCatalog = null,
         private FrazioneResolver $frazioneResolver = new FrazioneResolver(),
+        private ?FuzzyFrazioneCandidateProvider $fuzzyFrazioneCandidateProvider = null,
+        private FuzzyFrazioneMatcher $fuzzyFrazioneMatcher = new FuzzyFrazioneMatcher(),
     ) {
     }
 
@@ -67,12 +76,23 @@ final readonly class AddressResolutionOrchestrator
         $fractionEntries = $this->frazioneCatalog->find($input->city ?? '');
         if ($fractionEntries === []) {
             $resolved = $this->resolveAddress($input, $fuzzy);
-            return $this->copyResolution(
+            $resolved = $this->copyResolution(
                 $resolved,
                 new FrazioneResolution(FrazioneResolutionStatus::NO_MATCH, $input->city ?? '', typeGroup: FrazioneTypeGroup::NONE),
                 $resolved->geographicEvidence,
                 null,
             );
+            if (!$fuzzy) {
+                return $resolved;
+            }
+            if ($resolved->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::MATCH) {
+                return $this->withFuzzyFrazioneEvidence($resolved, $this->blockedFuzzyFrazione($input, FuzzyFrazioneResolutionDiagnostic::FUZZY_CITY_PRECEDENCE));
+            }
+            if ($resolved->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::AMBIGUOUS) {
+                return $this->withFuzzyFrazioneEvidence($resolved, $this->blockedFuzzyFrazione($input, FuzzyFrazioneResolutionDiagnostic::FUZZY_CITY_AMBIGUOUS));
+            }
+
+            return $this->tryFuzzyFrazione($input, $resolved);
         }
 
         $verified = [];
@@ -138,10 +158,17 @@ final readonly class AddressResolutionOrchestrator
             if ($fuzzy
                 && $fallback->status === AddressResolutionStatus::RESOLVED
                 && $fallback->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::MATCH) {
-                return $fallback;
+                return $this->withFuzzyFrazioneEvidence($fallback, $this->blockedFuzzyFrazione($input, FuzzyFrazioneResolutionDiagnostic::FUZZY_CITY_PRECEDENCE));
+            }
+            $fallback = $this->withFrazioneEvidence($fallback, $fraction);
+            if ($fuzzy) {
+                $blockedBy = $fallback->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::AMBIGUOUS
+                    ? FuzzyFrazioneResolutionDiagnostic::FUZZY_CITY_AMBIGUOUS
+                    : FuzzyFrazioneResolutionDiagnostic::EXACT_FRACTION_PRECEDENCE;
+                return $this->withFuzzyFrazioneEvidence($fallback, $this->blockedFuzzyFrazione($input, $blockedBy));
             }
 
-            return $this->withFrazioneEvidence($fallback, $fraction);
+            return $fallback;
         }
 
         $effective = new AddressInput($input->vianum, $input->cap, $fraction->comune ?? '', $fraction->provincia ?? '');
@@ -161,6 +188,10 @@ final readonly class AddressResolutionOrchestrator
             );
         } else {
             $resolved = $this->withFrazioneEvidence($resolved, $fraction);
+        }
+
+        if ($fuzzy) {
+            $resolved = $this->withFuzzyFrazioneEvidence($resolved, $this->blockedFuzzyFrazione($input, FuzzyFrazioneResolutionDiagnostic::EXACT_FRACTION_PRECEDENCE));
         }
 
         return $resolved;
@@ -916,6 +947,7 @@ final readonly class AddressResolutionOrchestrator
         FrazioneResolution $frazione,
         ?AddressGeographicEvidence $geographicEvidence,
         ?AddressResolutionDiagnostic $diagnostic,
+        ?FuzzyFrazioneResolution $fuzzyFrazioneResolution = null,
     ): AddressResolution {
         $diagnostics = [];
         foreach ($resolution->diagnostics as $item) {
@@ -937,6 +969,309 @@ final readonly class AddressResolutionOrchestrator
                 $resolution->fuzzyCityResolution,
                 $geographicEvidence,
                 $frazione,
+                $fuzzyFrazioneResolution ?? $resolution->fuzzyFrazioneResolution,
+        );
+    }
+
+    private function tryFuzzyFrazione(AddressInput $input, AddressResolution $fallback): AddressResolution
+    {
+        $provider = $this->fuzzyFrazioneCandidateProvider
+            ?? ($this->frazioneCatalog instanceof FuzzyFrazioneCandidateProvider ? $this->frazioneCatalog : null);
+        if ($provider === null) {
+            throw new LogicException('Fuzzy fraction candidate provider is not configured.');
+        }
+
+        $sourceName = $input->city ?? '';
+        $sourceProvince = $input->province ?? '';
+        $nominalEntries = $provider->findFuzzyCandidates($sourceName, $this->fuzzyFrazioneMatcher->options());
+        $nominal = $this->fuzzyFrazioneMatcher->match($sourceName, $nominalEntries);
+        if ($nominal->status === FuzzyFrazioneMatchStatus::NOT_APPLICABLE) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::NOT_APPLICABLE,
+                $sourceName,
+                $sourceProvince,
+                diagnostic: FuzzyFrazioneResolutionDiagnostic::NO_NOMINAL_CANDIDATE,
+            ));
+        }
+        if ($nominal->status === FuzzyFrazioneMatchStatus::NO_MATCH) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::NO_MATCH,
+                $sourceName,
+                $sourceProvince,
+                diagnostic: FuzzyFrazioneResolutionDiagnostic::NO_NOMINAL_CANDIDATE,
+            ));
+        }
+
+        $provinceKey = $this->directoryKeyNormalizer->normalize($sourceProvince);
+        $provinceUsable = preg_match('/\A[A-Z]{2}\z/', $provinceKey) === 1;
+        $candidates = $nominal->candidates;
+        if ($provinceUsable) {
+            $scoped = array_values(array_filter($candidates, fn (FuzzyFrazioneCandidate $candidate): bool =>
+                $this->candidateMayBelongToProvince($candidate, $provinceKey)));
+            if ($scoped !== []) {
+                $candidates = $scoped;
+            } else {
+                if (count($nominal->candidates) === 1) {
+                    $candidate = $nominal->candidates[0];
+                    $territory = $this->resolveFuzzyFractionTerritory($sourceName, $sourceProvince, $candidate);
+                    $street = $territory->comune !== null && $territory->provincia !== null
+                        ? $this->verifyFractionStreet($input->vianum, $territory->comune, $territory->provincia)
+                        : null;
+                    $status = match ($territory->status) {
+                        FrazioneResolutionStatus::AMBIGUOUS => FuzzyFrazioneResolutionStatus::AMBIGUOUS,
+                        FrazioneResolutionStatus::INDETERMINATE => FuzzyFrazioneResolutionStatus::INDETERMINATE,
+                        FrazioneResolutionStatus::MATCH => FuzzyFrazioneResolutionStatus::INDETERMINATE,
+                        FrazioneResolutionStatus::NO_MATCH, FrazioneResolutionStatus::NOT_APPLICABLE => FuzzyFrazioneResolutionStatus::INDETERMINATE,
+                    };
+                    $diagnostic = match ($territory->status) {
+                        FrazioneResolutionStatus::AMBIGUOUS => FuzzyFrazioneResolutionDiagnostic::MULTIPLE_TERRITORIAL_ASSOCIATIONS,
+                        FrazioneResolutionStatus::INDETERMINATE => $territory->diagnostic === FrazioneResolutionDiagnostic::INCOMPLETE_TERRITORIAL_ALTERNATIVE
+                            ? FuzzyFrazioneResolutionDiagnostic::INCOMPLETE_TERRITORIAL_ALTERNATIVE
+                            : FuzzyFrazioneResolutionDiagnostic::TERRITORY_UNVERIFIED,
+                        FrazioneResolutionStatus::MATCH, FrazioneResolutionStatus::NO_MATCH, FrazioneResolutionStatus::NOT_APPLICABLE => FuzzyFrazioneResolutionDiagnostic::NO_PROVINCIAL_CANDIDATE,
+                    };
+                    return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                        $status,
+                        $sourceName,
+                        $sourceProvince,
+                        $nominal->candidates,
+                        $candidate,
+                        $territory,
+                        $street,
+                        $diagnostic,
+                    ));
+                }
+                return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                    FuzzyFrazioneResolutionStatus::AMBIGUOUS,
+                    $sourceName,
+                    $sourceProvince,
+                    $nominal->candidates,
+                    diagnostic: FuzzyFrazioneResolutionDiagnostic::MULTIPLE_NOMINAL_CANDIDATES,
+                ));
+            }
+        }
+
+        // Preserve all catalog rows for each in-scope spelling so incomplete
+        // associations remain visible to the territorial resolver.
+        $scopedEntries = [];
+        foreach ($candidates as $candidate) {
+            array_push($scopedEntries, ...$candidate->entries);
+        }
+        $scopedMatch = $this->fuzzyFrazioneMatcher->match($sourceName, $scopedEntries);
+        if ($scopedMatch->status === FuzzyFrazioneMatchStatus::AMBIGUOUS) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::AMBIGUOUS,
+                $sourceName,
+                $sourceProvince,
+                $scopedMatch->candidates,
+                diagnostic: FuzzyFrazioneResolutionDiagnostic::MULTIPLE_NOMINAL_CANDIDATES,
+            ));
+        }
+        if ($scopedMatch->match === null) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::NO_MATCH,
+                $sourceName,
+                $sourceProvince,
+                diagnostic: FuzzyFrazioneResolutionDiagnostic::NO_PROVINCIAL_CANDIDATE,
+            ));
+        }
+
+        $candidate = $scopedMatch->match;
+        $territory = $this->resolveFuzzyFractionTerritory($sourceName, $sourceProvince, $candidate);
+        $canUseTerritory = $provinceUsable
+            && $territory->status === FrazioneResolutionStatus::MATCH
+            && $this->directoryKeyNormalizer->normalize((string) $territory->provincia) === $provinceKey;
+        if ($territory->status !== FrazioneResolutionStatus::MATCH) {
+            $status = $territory->status === FrazioneResolutionStatus::AMBIGUOUS
+                ? FuzzyFrazioneResolutionStatus::AMBIGUOUS
+                : FuzzyFrazioneResolutionStatus::INDETERMINATE;
+            $diagnostic = $territory->status === FrazioneResolutionStatus::AMBIGUOUS
+                ? FuzzyFrazioneResolutionDiagnostic::MULTIPLE_TERRITORIAL_ASSOCIATIONS
+                : ($territory->diagnostic === FrazioneResolutionDiagnostic::INCOMPLETE_TERRITORIAL_ALTERNATIVE
+                    ? FuzzyFrazioneResolutionDiagnostic::INCOMPLETE_TERRITORIAL_ALTERNATIVE
+                    : FuzzyFrazioneResolutionDiagnostic::TERRITORY_UNVERIFIED);
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution($status, $sourceName, $sourceProvince, $scopedMatch->candidates, $candidate, $territory, diagnostic: $diagnostic));
+        }
+
+        if (!$canUseTerritory) {
+            $street = $this->verifyFractionStreet($input->vianum, (string) $territory->comune, (string) $territory->provincia);
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::SUGGESTED,
+                $sourceName,
+                $sourceProvince,
+                $scopedMatch->candidates,
+                $candidate,
+                $territory,
+                $street,
+                $provinceUsable
+                    ? FuzzyFrazioneResolutionDiagnostic::NO_PROVINCIAL_CANDIDATE
+                    : FuzzyFrazioneResolutionDiagnostic::SOURCE_PROVINCE_MISSING_OR_INVALID,
+            ));
+        }
+
+        if ($this->directory->findTerritorialEntries($candidate->canonicalName) !== []) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::BLOCKED,
+                $sourceName,
+                $sourceProvince,
+                $scopedMatch->candidates,
+                $candidate,
+                $territory,
+                diagnostic: FuzzyFrazioneResolutionDiagnostic::TARGET_IS_EXACT_MUNICIPALITY,
+            ));
+        }
+
+        $street = $this->verifyFractionStreet($input->vianum, (string) $territory->comune, (string) $territory->provincia);
+        if (!in_array($street->status, [FrazioneStreetEvidenceStatus::EXACT_STREET, FrazioneStreetEvidenceStatus::CIVIC_COMPATIBLE], true)) {
+            $diagnostic = match ($street->status) {
+                FrazioneStreetEvidenceStatus::STREET_NOT_FOUND, FrazioneStreetEvidenceStatus::PARSER_AMBIGUOUS => FuzzyFrazioneResolutionDiagnostic::STREET_NOT_VERIFIED,
+                FrazioneStreetEvidenceStatus::CIVIC_NOT_COMPATIBLE => FuzzyFrazioneResolutionDiagnostic::CIVIC_NOT_COMPATIBLE,
+                FrazioneStreetEvidenceStatus::CIVIC_INDETERMINATE => FuzzyFrazioneResolutionDiagnostic::CIVIC_INDETERMINATE,
+                FrazioneStreetEvidenceStatus::EXACT_STREET, FrazioneStreetEvidenceStatus::CIVIC_COMPATIBLE => throw new LogicException('Unreachable street evidence status.'),
+            };
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(FuzzyFrazioneResolutionStatus::SUGGESTED, $sourceName, $sourceProvince, $scopedMatch->candidates, $candidate, $territory, $street, $diagnostic));
+        }
+
+        $effectiveInput = new AddressInput($input->vianum, $input->cap, (string) $territory->comune, (string) $territory->provincia);
+        $resolved = $this->resolveAddress($effectiveInput, true, true);
+        if ($resolved->status !== AddressResolutionStatus::RESOLVED) {
+            return $this->withFuzzyFrazioneEvidence($fallback, new FuzzyFrazioneResolution(
+                FuzzyFrazioneResolutionStatus::SUGGESTED,
+                $sourceName,
+                $sourceProvince,
+                $scopedMatch->candidates,
+                $candidate,
+                $territory,
+                $street,
+                FuzzyFrazioneResolutionDiagnostic::ADDRESS_NOT_RESOLVED,
+            ));
+        }
+
+        $fuzzyResolution = new FuzzyFrazioneResolution(
+            FuzzyFrazioneResolutionStatus::APPLIED,
+            $sourceName,
+            $sourceProvince,
+            $scopedMatch->candidates,
+            $candidate,
+            $territory,
+            $street,
+        );
+        $diagnostics = [];
+        foreach ([...$fallback->diagnostics, ...$resolved->diagnostics, AddressResolutionDiagnostic::FUZZY_FRAZIONE_APPLIED] as $diagnostic) {
+            $diagnostics[$diagnostic->value] = $diagnostic;
+        }
+        return new AddressResolution(
+            $resolved->strategy,
+            $resolved->status,
+            $resolved->candidateCaps,
+            $resolved->resolvedCap,
+            $resolved->territorialResolution,
+            $resolved->streetCandidateResolutions,
+            $this->orderedDiagnostics($diagnostics),
+            $resolved->fuzzyStreetEvidence,
+            $fallback->fuzzyCityResolution,
+            new AddressGeographicEvidence(
+                AddressGeographicEvidenceKind::FUZZY_FRAZIONE_TO_COMUNE,
+                $sourceName,
+                $sourceProvince,
+                (string) $territory->comune,
+                (string) $territory->provincia,
+            ),
+            $fallback->frazioneResolution,
+            $fuzzyResolution,
+        );
+    }
+
+    private function candidateMayBelongToProvince(FuzzyFrazioneCandidate $candidate, string $provinceKey): bool
+    {
+        foreach ($candidate->entries as $entry) {
+            if (trim($entry->provincia) === '' || $this->directoryKeyNormalizer->normalize($entry->provincia) === $provinceKey) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function resolveFuzzyFractionTerritory(string $sourceName, string $sourceProvince, FuzzyFrazioneCandidate $candidate): FrazioneResolution
+    {
+        $verified = [];
+        $capConflict = false;
+        foreach ($candidate->entries as $entry) {
+            if (trim($entry->comune) === '' || trim($entry->provincia) === '') {
+                continue;
+            }
+            $territorialEntries = $this->directory->findTerritorialEntries($entry->comune);
+            $matching = array_values(array_filter($territorialEntries, fn ($territorial): bool =>
+                $this->directoryKeyNormalizer->normalize($territorial->city) === $this->directoryKeyNormalizer->normalize($entry->comune)
+                && $this->directoryKeyNormalizer->normalize($territorial->province) === $this->directoryKeyNormalizer->normalize($entry->provincia)));
+            if ($matching !== [] && trim($entry->cap) !== ''
+                && !in_array($entry->cap, array_map(static fn ($territorial): string => $territorial->cap, $matching), true)) {
+                $capConflict = true;
+            }
+            foreach ($matching as $territorial) {
+                $key = $this->directoryKeyNormalizer->normalize($territorial->city) . "\0" . $this->directoryKeyNormalizer->normalize($territorial->province);
+                $verified[$key] = ['comune' => $territorial->city, 'provincia' => $territorial->province];
+            }
+        }
+        $resolution = $this->frazioneResolver->resolve($sourceName, $sourceProvince, $candidate->entries, array_values($verified));
+        if (!$capConflict) {
+            return $resolution;
+        }
+
+        return new FrazioneResolution(
+            $resolution->status,
+            $resolution->sourceName,
+            $resolution->entries,
+            $resolution->candidateMunicipalities,
+            $resolution->comune,
+            $resolution->provincia,
+            $resolution->typeGroup,
+            $resolution->diagnostic ?? FrazioneResolutionDiagnostic::CATALOG_CAP_CONFLICT,
+            true,
+            $resolution->streetEvidence,
+            $resolution->incompleteAlternatives,
+        );
+    }
+
+    private function blockedFuzzyFrazione(AddressInput $input, FuzzyFrazioneResolutionDiagnostic $diagnostic): FuzzyFrazioneResolution
+    {
+        return new FuzzyFrazioneResolution(
+            FuzzyFrazioneResolutionStatus::BLOCKED,
+            $input->city ?? '',
+            $input->province,
+            diagnostic: $diagnostic,
+        );
+    }
+
+    private function withFuzzyFrazioneEvidence(AddressResolution $resolution, FuzzyFrazioneResolution $evidence): AddressResolution
+    {
+        $diagnostic = match ($evidence->status) {
+            FuzzyFrazioneResolutionStatus::APPLIED => AddressResolutionDiagnostic::FUZZY_FRAZIONE_APPLIED,
+            FuzzyFrazioneResolutionStatus::SUGGESTED => AddressResolutionDiagnostic::FUZZY_FRAZIONE_SUGGESTED,
+            FuzzyFrazioneResolutionStatus::AMBIGUOUS => AddressResolutionDiagnostic::FUZZY_FRAZIONE_AMBIGUOUS,
+            FuzzyFrazioneResolutionStatus::INDETERMINATE => AddressResolutionDiagnostic::FUZZY_FRAZIONE_UNVERIFIED,
+            FuzzyFrazioneResolutionStatus::NO_MATCH => AddressResolutionDiagnostic::FUZZY_FRAZIONE_NO_MATCH,
+            FuzzyFrazioneResolutionStatus::NOT_APPLICABLE => AddressResolutionDiagnostic::FUZZY_NOT_APPLICABLE,
+            FuzzyFrazioneResolutionStatus::BLOCKED => AddressResolutionDiagnostic::FUZZY_FRAZIONE_BLOCKED,
+        };
+        $diagnostics = [];
+        foreach ($resolution->diagnostics as $item) {
+            $diagnostics[$item->value] = $item;
+        }
+        $diagnostics[$diagnostic->value] = $diagnostic;
+        return new AddressResolution(
+            $resolution->strategy,
+            $resolution->status,
+            $resolution->candidateCaps,
+            $resolution->resolvedCap,
+            $resolution->territorialResolution,
+            $resolution->streetCandidateResolutions,
+            $this->orderedDiagnostics($diagnostics),
+            $resolution->fuzzyStreetEvidence,
+            $resolution->fuzzyCityResolution,
+            $resolution->geographicEvidence,
+            $resolution->frazioneResolution,
+            $evidence,
         );
     }
 }

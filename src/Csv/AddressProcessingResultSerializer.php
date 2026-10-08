@@ -9,6 +9,7 @@ use Normalizzatore\Normalization\NormalizedField;
 use Normalizzatore\Normalization\NormalizedFieldName;
 use Normalizzatore\Normalization\NormalizedFieldStatus;
 use Normalizzatore\Text\OrthographyNormalizer;
+use Normalizzatore\Frazione\FuzzyFrazioneResolutionStatus;
 
 /** Pure mapping of a processing result to the ten appended CSV columns. */
 final class AddressProcessingResultSerializer
@@ -39,6 +40,14 @@ final class AddressProcessingResultSerializer
                 $corrections[] = $this->fieldCode($correction->field) . ':' . $this->quote($correction->originalValue)
                     . '->' . $this->quote($this->canonicalCorrectionValue($correction->field, $correction->proposedValue)) . ':' . $correction->reason->value;
             }
+        }
+        $fuzzyFrazione = $result->resolution->fuzzyFrazioneResolution;
+        if ($fuzzyFrazione?->status === FuzzyFrazioneResolutionStatus::SUGGESTED
+            && $fuzzyFrazione->selectedCandidate !== null) {
+            $municipality = $fuzzyFrazione->territorialResolution?->comune ?? '';
+            $suggested = $municipality !== '' ? $municipality : $fuzzyFrazione->selectedCandidate->canonicalName;
+            $corrections[] = 'SUGGERIMENTO_CITTA:' . $this->quote($fuzzyFrazione->sourceName)
+                . '->' . $this->quote($suggested) . ':fuzzy_frazione_osa1_non_applicato';
         }
 
         $diagnostics = [];
@@ -81,6 +90,36 @@ final class AddressProcessingResultSerializer
                     . ':directory_entries=' . $frazione->streetEvidence->exactDirectoryEntries
                     . ($frazione->streetEvidence->civicResolutionStatus === null ? '' : ':cap_resolver=' . $frazione->streetEvidence->civicResolutionStatus->name)
                     . ($frazione->streetEvidence->directoryCaps === [] ? '' : ':directory_caps=' . $this->quote(implode(',', $frazione->streetEvidence->directoryCaps))));
+        }
+        if ($fuzzyFrazione !== null) {
+            $candidateDescriptions = [];
+            foreach ($fuzzyFrazione->candidates as $candidate) {
+                $types = array_values(array_unique(array_map(static fn ($entry): string => trim($entry->tipo), $candidate->entries)));
+                sort($types, SORT_STRING);
+                $candidateDescriptions[] = $candidate->canonicalName
+                    . '[OSA=' . $candidate->distance
+                    . ',operazione=' . $candidate->operation->value
+                    . ',TIPO=' . implode(',', $types)
+                    . ']';
+            }
+            $selected = $fuzzyFrazione->selectedCandidate;
+            $territory = $fuzzyFrazione->territorialResolution;
+            $diagnostics[] = 'FRAZIONE_FUZZY:' . $fuzzyFrazione->status->value
+                . ':origine=' . $this->quote($fuzzyFrazione->sourceName)
+                . ':provincia_sorgente=' . $this->quote($fuzzyFrazione->sourceProvince ?? '')
+                . ($selected === null ? '' : ':candidato=' . $this->quote($selected->canonicalName))
+                . ($territory?->comune === null ? '' : ':comune=' . $this->quote($territory->comune))
+                . ($territory?->provincia === null ? '' : ':provincia=' . $this->quote($territory->provincia))
+                . ($territory?->typeGroup === null ? '' : ':tipo=' . $this->quote($territory->typeGroup->value))
+                . ($fuzzyFrazione->diagnostic === null ? '' : ':causa=' . $fuzzyFrazione->diagnostic->value)
+                . ($candidateDescriptions === [] ? '' : ':candidati=' . $this->quote(implode(',', $candidateDescriptions)))
+                . ($territory?->diagnostic === null ? '' : ':territorio=' . $territory->diagnostic->value)
+                . ($territory === null || $territory->incompleteAlternatives === [] ? '' : ':alternative_incomplete=' . count($territory->incompleteAlternatives))
+                . ($fuzzyFrazione->streetEvidence === null ? '' : ':via_evidence=' . $fuzzyFrazione->streetEvidence->status->value
+                    . ($fuzzyFrazione->streetEvidence->streetName === null ? '' : ':via=' . $this->quote($fuzzyFrazione->streetEvidence->streetName))
+                    . ($fuzzyFrazione->streetEvidence->civicNumber === null ? '' : ':civico=' . $this->quote($fuzzyFrazione->streetEvidence->civicNumber))
+                    . ':directory_entries=' . $fuzzyFrazione->streetEvidence->exactDirectoryEntries
+                    . ($fuzzyFrazione->streetEvidence->civicResolutionStatus === null ? '' : ':cap_resolver=' . $fuzzyFrazione->streetEvidence->civicResolutionStatus->name));
         }
         foreach ($result->capVerification->diagnostics as $diagnostic) {
             $diagnostics[] = 'CAP:' . $diagnostic->value;

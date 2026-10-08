@@ -195,6 +195,9 @@ final readonly class AddressFieldNormalizer
                 AddressGeographicEvidenceKind::FRAZIONE_TO_COMUNE => $field === NormalizedFieldName::CITY
                     ? FieldCorrectionReason::FRAZIONE_TO_COMUNE
                     : (trim($originalValue) === '' ? FieldCorrectionReason::PROVINCE_COMPLETION : FieldCorrectionReason::TERRITORIAL_PROVINCE_CORRECTION),
+                AddressGeographicEvidenceKind::FUZZY_FRAZIONE_TO_COMUNE => $field === NormalizedFieldName::CITY
+                    ? FieldCorrectionReason::FUZZY_FRAZIONE_TO_COMUNE
+                    : (trim($originalValue) === '' ? FieldCorrectionReason::PROVINCE_COMPLETION : FieldCorrectionReason::TERRITORIAL_PROVINCE_CORRECTION),
             };
         }
 
