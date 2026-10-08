@@ -7,6 +7,7 @@ namespace Normalizzatore\Resolution;
 use InvalidArgumentException;
 use Normalizzatore\Address\AddressResolutionStrategy;
 use Normalizzatore\City\FuzzyCityResolution;
+use Normalizzatore\Frazione\FrazioneResolution;
 
 /** Common, typed result of either address-resolution path. */
 final readonly class AddressResolution
@@ -27,6 +28,7 @@ final readonly class AddressResolution
         public ?FuzzyStreetAddressEvidence $fuzzyStreetEvidence = null,
         public ?FuzzyCityResolution $fuzzyCityResolution = null,
         public ?AddressGeographicEvidence $geographicEvidence = null,
+        public ?FrazioneResolution $frazioneResolution = null,
     ) {
         foreach ([$candidateCaps, $streetCandidateResolutions, $diagnostics] as $list) {
             if (!array_is_list($list)) {

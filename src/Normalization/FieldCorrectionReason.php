@@ -17,4 +17,5 @@ enum FieldCorrectionReason: string
     case TERRITORIAL_CITY_RECOVERY = 'territorial_city_recovery';
     case TERRITORIAL_PROVINCE_RECOVERY = 'territorial_province_recovery';
     case TERRITORIAL_STREET_RECOVERY = 'territorial_street_recovery';
+    case FRAZIONE_TO_COMUNE = 'frazione_to_comune';
 }

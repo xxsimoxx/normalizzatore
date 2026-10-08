@@ -54,6 +54,8 @@ final class CsvNormalizationPipelineTest extends TestCase
             SqliteDirectoryFixture::row("VIA LOCALITA` LE SALINE", '08020', 'Torpè', 'NU', 'T', '', ''),
         ]);
         $directory = new SqliteAddressDirectory($this->database);
+        $fractionCatalogPath = $this->directory . '/frazioni.tsv';
+        file_put_contents($fractionCatalogPath, "CAP\tCOMUNE\tFRAZIONE\tPROVINCIA\tTIPO\n00100\tROMA\tBorgata Nova\tRM\tNucleo abitato\n");
         $orchestrator = new AddressResolutionOrchestrator(
             new AddressStrategyClassifier(new CapizzatedCityCatalog([new CapizzatedCity('ROMA', 'RM')])),
             new AddressParser(),
@@ -62,6 +64,7 @@ final class CsvNormalizationPipelineTest extends TestCase
             new TerritorialResolver(),
             $directory,
             new FuzzyStreetMatcher(),
+            frazioneCatalog: new \Normalizzatore\Frazione\FrazioneCatalog($fractionCatalogPath),
         );
         $processor = new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());
         $this->pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
@@ -292,6 +295,7 @@ final class CsvNormalizationPipelineTest extends TestCase
         $default = NormalizeArguments::parse(['in.csv', 'out.csv']);
         self::assertSame(';', $default->delimiter);
         self::assertFalse($default->fuzzy);
+        self::assertFalse($default->frazioni);
         self::assertSame(',', NormalizeArguments::parse(['in.csv', 'out.csv', '--delimiter=,'])->delimiter);
         self::assertSame("\t", NormalizeArguments::parse(['in.csv', 'out.csv', "--delimiter=\t"])->delimiter);
         $fuzzyFirst = NormalizeArguments::parse(['in.csv', 'out.csv', '--fuzzy', '--delimiter=,']);
@@ -300,6 +304,9 @@ final class CsvNormalizationPipelineTest extends TestCase
         $fuzzyLast = NormalizeArguments::parse(['in.csv', 'out.csv', '--delimiter=,', '--fuzzy']);
         self::assertTrue($fuzzyLast->fuzzy);
         self::assertSame(',', $fuzzyLast->delimiter);
+        $fractionsBoth = NormalizeArguments::parse(['in.csv', 'out.csv', '--fuzzy', '--frazioni']);
+        self::assertTrue($fractionsBoth->fuzzy);
+        self::assertTrue($fractionsBoth->frazioni);
         $this->expectException(\InvalidArgumentException::class);
         NormalizeArguments::parse(['in.csv', 'out.csv', '--force']);
     }
@@ -309,6 +316,8 @@ final class CsvNormalizationPipelineTest extends TestCase
         foreach ([
             ['in.csv', 'out.csv', '--fuzzy=true'],
             ['in.csv', 'out.csv', '--fuzzy', '--fuzzy'],
+            ['in.csv', 'out.csv', '--frazioni=true'],
+            ['in.csv', 'out.csv', '--frazioni', '--frazioni'],
             ['in.csv', 'out.csv', '--delimiter=;', '--delimiter=;'],
         ] as $arguments) {
             try {
@@ -318,6 +327,22 @@ final class CsvNormalizationPipelineTest extends TestCase
                 self::assertTrue(true);
             }
         }
+    }
+
+    public function testFrazioneOptionPreservesSourceColumnsAndAddsNoOutputColumns(): void
+    {
+        $input = $this->write('fractions.csv', "note;vianum;CAP;citta;Provincia\nkeep;VIA ROMA 5;00100;Borgata Nova;RM\n");
+        $output = $this->directory . '/fractions-output.csv';
+        $summary = $this->pipeline->run($input, $output, ';', false, true);
+        $document = (new CsvReader())->read($output, ';');
+        $row = $document->rows[0];
+
+        self::assertSame(['note', 'vianum', 'CAP', 'citta', 'Provincia', ...AddressProcessingResultSerializer::OUTPUT_COLUMNS], $document->header);
+        self::assertSame(['keep', 'VIA ROMA 5', '00100', 'Borgata Nova', 'RM'], array_slice($row, 0, 5));
+        self::assertSame('ROMA', $row[9]);
+        self::assertStringContainsString('frazione_to_comune', $row[13]);
+        self::assertStringContainsString('Nucleo abitato', $row[14]);
+        self::assertSame(1, $summary->frazioneStatistics?->counts()['Nucleo abitato']['applied']);
     }
 
     public function testFuzzyCsvPipelineUsesTypedEvidenceAndAddsOnlySummaryStatistics(): void

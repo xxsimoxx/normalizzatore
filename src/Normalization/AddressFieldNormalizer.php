@@ -192,6 +192,9 @@ final readonly class AddressFieldNormalizer
                 AddressGeographicEvidenceKind::TERRITORIAL_STREET_RECOVERY => $field === NormalizedFieldName::CITY
                     ? FieldCorrectionReason::TERRITORIAL_CITY_RECOVERY
                     : FieldCorrectionReason::TERRITORIAL_PROVINCE_RECOVERY,
+                AddressGeographicEvidenceKind::FRAZIONE_TO_COMUNE => $field === NormalizedFieldName::CITY
+                    ? FieldCorrectionReason::FRAZIONE_TO_COMUNE
+                    : (trim($originalValue) === '' ? FieldCorrectionReason::PROVINCE_COMPLETION : FieldCorrectionReason::TERRITORIAL_PROVINCE_CORRECTION),
             };
         }
 

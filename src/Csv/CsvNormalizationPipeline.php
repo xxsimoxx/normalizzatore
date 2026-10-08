@@ -10,6 +10,7 @@ use Normalizzatore\Directory\FuzzyStreetCandidateSetStatus;
 use Normalizzatore\Resolution\AddressResolutionStatus;
 use Normalizzatore\Resolution\FuzzyStreetMatchKind;
 use Normalizzatore\Resolution\FuzzyStreetResolutionStatus;
+use Normalizzatore\Normalization\FieldCorrectionReason;
 use RuntimeException;
 use Throwable;
 
@@ -23,7 +24,7 @@ final readonly class CsvNormalizationPipeline
     ) {
     }
 
-    public function run(string $inputPath, string $outputPath, string $delimiter = ';', bool $fuzzy = false): CsvNormalizationSummary
+    public function run(string $inputPath, string $outputPath, string $delimiter = ';', bool $fuzzy = false, bool $frazioni = false): CsvNormalizationSummary
     {
         $started = hrtime(true);
         if (!is_file($inputPath) || !is_readable($inputPath)) {
@@ -60,12 +61,13 @@ final readonly class CsvNormalizationPipeline
             $fuzzyProviderCalls = $fuzzyProviderGeographicNotApplicable = 0;
             $fuzzyAbbreviationMatches = $fuzzyTypoMatches = $fuzzyAmbiguous = 0;
             $fuzzyNoMatch = $fuzzyNominalNotApplicable = $fuzzyResolved = 0;
+            $frazioneStatistics = $frazioni ? new FrazioneNormalizationStatistics() : null;
             foreach ($stream->rows() as $row) {
                 if (count($row) !== count($stream->header)) {
                     throw new RuntimeException(sprintf('Malformed CSV row %d: expected %d columns, got %d.', $processed + 2, count($stream->header), count($row)));
                 }
                 $input = $headerMap->addressInput($row);
-                $result = $this->processor->process($input, $fuzzy);
+                $result = $this->processor->process($input, $fuzzy, $frazioni);
                 $this->writer->writeRecord($handle, [...$row, ...$this->serializer->serialize($result)], $delimiter);
                 ++$processed;
                 match ($result->resolution->status) {
@@ -75,6 +77,17 @@ final readonly class CsvNormalizationPipeline
                 };
                 if ($result->sourceCapCorrection() !== null || $result->fieldCorrections() !== []) {
                     ++$rowsWithCorrections;
+                }
+                $frazioneEvidence = $result->resolution->frazioneResolution;
+                if ($frazioneEvidence !== null && $frazioneStatistics !== null) {
+                    $applied = false;
+                    foreach ($result->fieldCorrections() as $correction) {
+                        if ($correction->reason === FieldCorrectionReason::FRAZIONE_TO_COMUNE) {
+                            $applied = true;
+                            break;
+                        }
+                    }
+                    $frazioneStatistics->record($frazioneEvidence->status, $frazioneEvidence->typeGroup, $applied, $frazioneEvidence->catalogCapConflict);
                 }
                 $fuzzyEvidence = $result->resolution->fuzzyStreetEvidence;
                 if ($fuzzy && $fuzzyEvidence !== null) {
@@ -141,6 +154,7 @@ final readonly class CsvNormalizationPipeline
                     $fuzzyNominalNotApplicable,
                     $fuzzyResolved,
                 ) : null,
+                $frazioneStatistics,
             );
         } catch (Throwable $exception) {
             if (is_resource($handle)) {

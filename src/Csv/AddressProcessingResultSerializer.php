@@ -45,6 +45,43 @@ final class AddressProcessingResultSerializer
         foreach ($result->resolution->diagnostics as $diagnostic) {
             $diagnostics[] = 'RESOLUTION:' . $diagnostic->value;
         }
+        $frazione = $result->resolution->frazioneResolution;
+        if ($frazione !== null && !in_array($frazione->status, [
+            \Normalizzatore\Frazione\FrazioneResolutionStatus::NO_MATCH,
+            \Normalizzatore\Frazione\FrazioneResolutionStatus::NOT_APPLICABLE,
+        ], true)) {
+            $tipo = $frazione->typeGroup->value;
+            $sourceTypes = array_values(array_unique(array_filter(array_map(
+                static fn ($entry): string => trim($entry->tipo),
+                $frazione->entries,
+            ), static fn (string $value): bool => $value !== '')));
+            sort($sourceTypes, SORT_STRING);
+            $comune = $frazione->comune ?? '';
+            $candidates = array_map(
+                static fn (array $candidate): string => $candidate['comune'] . '/' . $candidate['provincia'],
+                $frazione->candidateMunicipalities,
+            );
+            $diagnostics[] = 'FRAZIONE:' . $frazione->status->value
+                . ':origine=' . $this->quote($frazione->sourceName)
+                . ':comune=' . $this->quote($comune)
+                . ':tipo=' . $this->quote($sourceTypes === [] ? $tipo : implode(',', $sourceTypes))
+                . ($frazione->diagnostic === null ? '' : ':causa=' . $frazione->diagnostic->value)
+                . ($candidates === [] ? '' : ':candidati=' . $this->quote(implode(',', $candidates)))
+                . ($frazione->incompleteAlternatives === [] ? '' : ':alternative_incomplete=' . $this->quote(implode(',', array_map(
+                    static fn ($entry): string => ($entry->comune === '' ? '[comune mancante]' : $entry->comune)
+                        . '/' . ($entry->provincia === '' ? '[provincia mancante]' : $entry->provincia)
+                        . '[' . $entry->tipo . '; CAP ' . ($entry->cap === '' ? 'assente' : $entry->cap) . ']'
+                        . '#riga ' . $entry->lineNumber,
+                    $frazione->incompleteAlternatives,
+                ))))
+                . ($frazione->catalogCapConflict ? ':catalog_cap_conflict' : '')
+                . ($frazione->streetEvidence === null ? '' : ':via_evidence=' . $frazione->streetEvidence->status->value
+                    . ($frazione->streetEvidence->streetName === null ? '' : ':via=' . $this->quote($frazione->streetEvidence->streetName))
+                    . ($frazione->streetEvidence->civicNumber === null ? '' : ':civico=' . $this->quote($frazione->streetEvidence->civicNumber))
+                    . ':directory_entries=' . $frazione->streetEvidence->exactDirectoryEntries
+                    . ($frazione->streetEvidence->civicResolutionStatus === null ? '' : ':cap_resolver=' . $frazione->streetEvidence->civicResolutionStatus->name)
+                    . ($frazione->streetEvidence->directoryCaps === [] ? '' : ':directory_caps=' . $this->quote(implode(',', $frazione->streetEvidence->directoryCaps))));
+        }
         foreach ($result->capVerification->diagnostics as $diagnostic) {
             $diagnostics[] = 'CAP:' . $diagnostic->value;
         }

@@ -29,4 +29,7 @@ enum AddressResolutionDiagnostic: string
     case FUZZY_CITY_NOT_APPLICABLE = 'fuzzy_city_not_applicable';
     case TERRITORIAL_LOCATION_CONFLICT = 'territorial_location_conflict';
     case TERRITORIAL_STREET_RECOVERY = 'territorial_street_recovery';
+    case FRAZIONE_RECOGNIZED = 'frazione_riconosciuta';
+    case FRAZIONE_AMBIGUOUS = 'frazione_ambigua';
+    case FRAZIONE_UNVERIFIED = 'frazione_non_verificabile';
 }

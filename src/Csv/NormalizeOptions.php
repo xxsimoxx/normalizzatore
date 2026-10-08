@@ -11,6 +11,7 @@ final readonly class NormalizeOptions
         public string $outputPath,
         public string $delimiter = ';',
         public bool $fuzzy = false,
+        public bool $frazioni = false,
     )
     {
     }

@@ -14,6 +14,7 @@ final readonly class CsvNormalizationSummary
         public int $rowsWithCorrections,
         public float $elapsedSeconds,
         public ?FuzzyNormalizationStatistics $fuzzyStatistics = null,
+        public ?FrazioneNormalizationStatistics $frazioneStatistics = null,
     ) {
     }
 
@@ -31,6 +32,9 @@ final readonly class CsvNormalizationSummary
 
         if ($this->fuzzyStatistics !== null) {
             $text .= $this->fuzzyStatistics->toText();
+        }
+        if ($this->frazioneStatistics !== null) {
+            $text .= $this->frazioneStatistics->toText();
         }
 
         return $text;

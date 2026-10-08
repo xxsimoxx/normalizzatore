@@ -16,6 +16,8 @@ use Normalizzatore\Resolution\AddressResolutionOrchestrator;
 use Normalizzatore\Resolution\CapResolver;
 use Normalizzatore\Resolution\TerritorialResolver;
 use Normalizzatore\Verification\SourceCapVerifier;
+use Normalizzatore\Frazione\FrazioneCatalog;
+use Normalizzatore\Frazione\FrazioneResolver;
 
 /** Creates the shared application composition for CLI and public PHP entry points. */
 final class AddressProcessorFactory
@@ -37,6 +39,8 @@ final class AddressProcessorFactory
             fuzzyCityCandidateProvider: $directory,
             fuzzyCityResolver: new FuzzyCityResolver(),
             territorialStreetRecoveryProvider: $directory,
+            frazioneCatalog: new FrazioneCatalog($projectRoot . '/resources/frazioni.tsv'),
+            frazioneResolver: new FrazioneResolver(),
         );
 
         return new AddressProcessor($orchestrator, new SourceCapVerifier(), new AddressFieldNormalizer());

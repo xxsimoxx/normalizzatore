@@ -23,6 +23,14 @@ use Normalizzatore\Directory\FuzzyCityCandidateProvider;
 use Normalizzatore\Directory\FuzzyStreetCandidateProvider;
 use Normalizzatore\Directory\FuzzyStreetCandidateSetStatus;
 use Normalizzatore\Directory\TerritorialStreetRecoveryProvider;
+use Normalizzatore\Frazione\FrazioneCatalog;
+use Normalizzatore\Frazione\FrazioneResolution;
+use Normalizzatore\Frazione\FrazioneResolutionDiagnostic;
+use Normalizzatore\Frazione\FrazioneResolutionStatus;
+use Normalizzatore\Frazione\FrazioneResolver;
+use Normalizzatore\Frazione\FrazioneStreetEvidence;
+use Normalizzatore\Frazione\FrazioneStreetEvidenceStatus;
+use Normalizzatore\Frazione\FrazioneTypeGroup;
 
 /** Coordinates the existing territorial and street-based resolution components. */
 final readonly class AddressResolutionOrchestrator
@@ -40,10 +48,125 @@ final readonly class AddressResolutionOrchestrator
         private FuzzyCityResolver $fuzzyCityResolver = new FuzzyCityResolver(),
         private ?TerritorialStreetRecoveryProvider $territorialStreetRecoveryProvider = null,
         private DirectoryKeyNormalizer $directoryKeyNormalizer = new DirectoryKeyNormalizer(),
+        private ?FrazioneCatalog $frazioneCatalog = null,
+        private FrazioneResolver $frazioneResolver = new FrazioneResolver(),
     ) {
     }
 
-    public function resolve(AddressInput $input, bool $fuzzy = false): AddressResolution
+    public function resolve(AddressInput $input, bool $fuzzy = false, bool $frazioni = false): AddressResolution
+    {
+        if (!$frazioni || trim((string) $input->city) === '' || $this->frazioneCatalog === null) {
+            return $this->resolveAddress($input, $fuzzy);
+        }
+
+        // Exact/canonical municipalities always outrank a fraction with the same name.
+        if ($this->directory->findTerritorialEntries($input->city ?? '') !== []) {
+            return $this->resolveAddress($input, $fuzzy);
+        }
+
+        $fractionEntries = $this->frazioneCatalog->find($input->city ?? '');
+        if ($fractionEntries === []) {
+            $resolved = $this->resolveAddress($input, $fuzzy);
+            return $this->copyResolution(
+                $resolved,
+                new FrazioneResolution(FrazioneResolutionStatus::NO_MATCH, $input->city ?? '', typeGroup: FrazioneTypeGroup::NONE),
+                $resolved->geographicEvidence,
+                null,
+            );
+        }
+
+        $verified = [];
+        $catalogCapConflict = false;
+        foreach ($fractionEntries as $entry) {
+            if (trim($entry->comune) === '' || trim($entry->provincia) === '') {
+                continue;
+            }
+            $municipalityTerritory = $this->directory->findTerritorialEntries($entry->comune);
+            $matchingTerritory = array_values(array_filter($municipalityTerritory, fn ($territorial): bool =>
+                $this->directoryKeyNormalizer->normalize($territorial->city) === $this->directoryKeyNormalizer->normalize($entry->comune)
+                && $this->directoryKeyNormalizer->normalize($territorial->province) === $this->directoryKeyNormalizer->normalize($entry->provincia)));
+            if (trim($entry->cap) !== '' && $matchingTerritory !== []
+                && !in_array($entry->cap, array_map(static fn ($territorial): string => $territorial->cap, $matchingTerritory), true)) {
+                $catalogCapConflict = true;
+            }
+            foreach ($matchingTerritory as $territorial) {
+                $verified[$this->directoryKeyNormalizer->normalize($territorial->city) . "\0" . $this->directoryKeyNormalizer->normalize($territorial->province)] = [
+                    'comune' => $territorial->city,
+                    'provincia' => $territorial->province,
+                ];
+                break;
+            }
+        }
+        $fraction = $this->frazioneResolver->resolve($input->city ?? '', $input->province, $fractionEntries, array_values($verified));
+        if ($catalogCapConflict) {
+            $fraction = new FrazioneResolution(
+                $fraction->status, $fraction->sourceName, $fraction->entries, $fraction->candidateMunicipalities,
+                $fraction->comune, $fraction->provincia, $fraction->typeGroup,
+                $fraction->diagnostic ?? FrazioneResolutionDiagnostic::CATALOG_CAP_CONFLICT,
+                true,
+                $fraction->streetEvidence,
+                $fraction->incompleteAlternatives,
+            );
+        }
+        if ($fraction->status === FrazioneResolutionStatus::MATCH
+            && trim((string) $input->province) !== ''
+            && $this->directoryKeyNormalizer->normalize((string) $input->province)
+                !== $this->directoryKeyNormalizer->normalize((string) $fraction->provincia)) {
+            $streetEvidence = $this->verifyFractionStreet(
+                $input->vianum,
+                (string) $fraction->comune,
+                (string) $fraction->provincia,
+            );
+            // Street/civic compatibility is useful diagnostic evidence, but by
+            // itself it cannot authorize a fraction correction across provinces.
+            $fraction = new FrazioneResolution(
+                FrazioneResolutionStatus::INDETERMINATE,
+                $fraction->sourceName,
+                $fraction->entries,
+                $fraction->candidateMunicipalities,
+                typeGroup: $fraction->typeGroup,
+                diagnostic: FrazioneResolutionDiagnostic::SOURCE_PROVINCE_CONFLICT,
+                catalogCapConflict: $fraction->catalogCapConflict,
+                streetEvidence: $streetEvidence,
+            );
+        }
+        if ($fraction->status !== FrazioneResolutionStatus::MATCH) {
+            // A fraction abstention cannot constrain or disambiguate the city
+            // matcher. Let fuzzy city resolution run independently; retain the
+            // fraction abstention when that path does not resolve the address.
+            $fallback = $this->resolveAddress($input, $fuzzy);
+            if ($fuzzy
+                && $fallback->status === AddressResolutionStatus::RESOLVED
+                && $fallback->fuzzyCityResolution?->status === FuzzyCityResolutionStatus::MATCH) {
+                return $fallback;
+            }
+
+            return $this->withFrazioneEvidence($fallback, $fraction);
+        }
+
+        $effective = new AddressInput($input->vianum, $input->cap, $fraction->comune ?? '', $fraction->provincia ?? '');
+        $resolved = $this->resolveAddress($effective, $fuzzy, true);
+        if ($resolved->status === AddressResolutionStatus::RESOLVED) {
+            $resolved = $this->copyResolution(
+                $resolved,
+                $fraction,
+                new AddressGeographicEvidence(
+                    AddressGeographicEvidenceKind::FRAZIONE_TO_COMUNE,
+                    $input->city ?? '',
+                    $input->province ?? '',
+                    $fraction->comune ?? '',
+                    $fraction->provincia ?? '',
+                ),
+                AddressResolutionDiagnostic::FRAZIONE_RECOGNIZED,
+            );
+        } else {
+            $resolved = $this->withFrazioneEvidence($resolved, $fraction);
+        }
+
+        return $resolved;
+    }
+
+    private function resolveAddress(AddressInput $input, bool $fuzzy, bool $suppressFuzzyCity = false): AddressResolution
     {
         $initialStrategy = $this->strategyClassifier->classify($input);
         // Source CAP is deliberately excluded: it must not cause an otherwise empty
@@ -68,7 +191,7 @@ final readonly class AddressResolutionOrchestrator
         $fuzzyCityResolution = null;
         $geographicEvidence = null;
         $sourceCity = trim($input->city ?? '');
-        if ($fuzzy && $sourceCity !== ''
+        if ($fuzzy && !$suppressFuzzyCity && $sourceCity !== ''
             && $initialStrategy !== AddressResolutionStrategy::STREET_BASED
             && $this->fuzzyCityCandidateProvider !== null
             && $this->directory->findTerritorialEntries($sourceCity) === []) {
@@ -726,5 +849,94 @@ final readonly class AddressResolutionOrchestrator
         }
 
         return $ordered;
+    }
+
+    private function withFrazioneEvidence(AddressResolution $resolution, FrazioneResolution $frazione): AddressResolution
+    {
+        $diagnostic = match ($frazione->status) {
+            FrazioneResolutionStatus::MATCH => AddressResolutionDiagnostic::FRAZIONE_RECOGNIZED,
+            FrazioneResolutionStatus::AMBIGUOUS => AddressResolutionDiagnostic::FRAZIONE_AMBIGUOUS,
+            FrazioneResolutionStatus::INDETERMINATE => AddressResolutionDiagnostic::FRAZIONE_UNVERIFIED,
+            FrazioneResolutionStatus::NO_MATCH, FrazioneResolutionStatus::NOT_APPLICABLE => null,
+        };
+        return $this->copyResolution($resolution, $frazione, $resolution->geographicEvidence, $diagnostic);
+    }
+
+    private function verifyFractionStreet(string $sourceAddress, string $city, string $province): FrazioneStreetEvidence
+    {
+        $parsed = $this->addressParser->parse(new AddressInput($sourceAddress, '', $city, $province));
+        $candidate = $parsed->syntaxPreference?->preferredCandidate;
+        if ($candidate === null && count($parsed->candidates) === 1) {
+            $candidate = $parsed->candidates[0];
+        }
+        if ($candidate === null) {
+            return new FrazioneStreetEvidence(FrazioneStreetEvidenceStatus::PARSER_AMBIGUOUS, null, null, 0);
+        }
+
+        $entries = $this->directory->findByStreetCityProvince($candidate->streetName, $city, $province);
+        if ($entries === []) {
+            return new FrazioneStreetEvidence(
+                FrazioneStreetEvidenceStatus::STREET_NOT_FOUND,
+                $candidate->streetName,
+                $candidate->houseNumber?->number,
+                0,
+            );
+        }
+        $caps = array_values(array_unique(array_map(static fn (DirectoryEntry $entry): string => $entry->cap, $entries)));
+        sort($caps, SORT_STRING);
+        if ($candidate->houseNumber === null) {
+            return new FrazioneStreetEvidence(
+                FrazioneStreetEvidenceStatus::EXACT_STREET,
+                $candidate->streetName,
+                null,
+                count($entries),
+                directoryCaps: $caps,
+            );
+        }
+
+        $civicResolution = $this->capResolver->resolve($candidate, $entries);
+        $status = match ($civicResolution->status) {
+            CapResolutionStatus::RESOLVED => FrazioneStreetEvidenceStatus::CIVIC_COMPATIBLE,
+            CapResolutionStatus::NO_MATCH => FrazioneStreetEvidenceStatus::CIVIC_NOT_COMPATIBLE,
+            CapResolutionStatus::AMBIGUOUS, CapResolutionStatus::INDETERMINATE => FrazioneStreetEvidenceStatus::CIVIC_INDETERMINATE,
+        };
+
+        return new FrazioneStreetEvidence(
+            $status,
+            $candidate->streetName,
+            $candidate->houseNumber->number,
+            count($entries),
+            $civicResolution->status,
+            $caps,
+        );
+    }
+
+    private function copyResolution(
+        AddressResolution $resolution,
+        FrazioneResolution $frazione,
+        ?AddressGeographicEvidence $geographicEvidence,
+        ?AddressResolutionDiagnostic $diagnostic,
+    ): AddressResolution {
+        $diagnostics = [];
+        foreach ($resolution->diagnostics as $item) {
+            $diagnostics[$item->value] = $item;
+        }
+        if ($diagnostic !== null) {
+            $diagnostics[$diagnostic->value] = $diagnostic;
+        }
+
+        return new AddressResolution(
+            $resolution->strategy,
+            $resolution->status,
+            $resolution->candidateCaps,
+            $resolution->resolvedCap,
+            $resolution->territorialResolution,
+            $resolution->streetCandidateResolutions,
+            $this->orderedDiagnostics($diagnostics),
+            $resolution->fuzzyStreetEvidence,
+                $resolution->fuzzyCityResolution,
+                $geographicEvidence,
+                $frazione,
+        );
     }
 }

@@ -92,6 +92,40 @@ final class NormalizzaApiTest extends TestCase
         self::assertStringContainsString('RESOLUTION:fuzzy_typo_match', $result['diagnostica']);
     }
 
+    public function testOptionalFrazioniParameterResolvesFienilDelTurcoWithoutChangingTenColumnContract(): void
+    {
+        $without = normalizza('CORSO DEL POPOLO 3', '45100', 'Fienil del Turco', 'RO');
+        $with = normalizza('CORSO DEL POPOLO 3', '45100', 'Fienil del Turco', 'RO', false, true);
+
+        self::assertCount(10, $with);
+        self::assertSame(array_keys($without), array_keys($with));
+        self::assertSame('NO_MATCH', $without['stato_risoluzione']);
+        self::assertSame('RESOLVED', $with['stato_risoluzione']);
+        self::assertSame('45100', $with['cap_normalizzato']);
+        self::assertSame('ROVIGO', $with['citta_normalizzata']);
+        self::assertStringContainsString('CITTA:"Fienil del Turco"->"ROVIGO":frazione_to_comune', $with['correzioni_suggerite']);
+        self::assertStringContainsString('FRAZIONE:MATCH', $with['diagnostica']);
+        self::assertStringContainsString('Centro abitato', $with['diagnostica']);
+    }
+
+    public function testFractionCompletesMissingProvinceButDoesNotCorrectAcrossProvinceConflict(): void
+    {
+        $missingProvince = normalizza('CORSO DEL POPOLO 3', '45100', 'Fienil del Turco', '', false, true);
+        $wrongProvince = normalizza('CORSO DEL POPOLO 3', '99999', 'Fienil del Turco', 'XX', false, true);
+
+        self::assertSame('ROVIGO', $missingProvince['citta_normalizzata']);
+        self::assertSame('RO', $missingProvince['provincia_normalizzata']);
+        self::assertSame('45100', $missingProvince['cap_normalizzato']);
+        self::assertSame('NO_MATCH', $wrongProvince['stato_risoluzione']);
+        self::assertSame('', $wrongProvince['citta_normalizzata']);
+        self::assertSame('', $wrongProvince['provincia_normalizzata']);
+        self::assertSame('', $wrongProvince['cap_normalizzato']);
+        self::assertSame('UNVERIFIABLE', $wrongProvince['verifica_cap']);
+        self::assertSame('', $wrongProvince['correzioni_suggerite']);
+        self::assertStringContainsString('SOURCE_PROVINCE_CONFLICT', $wrongProvince['diagnostica']);
+        self::assertStringContainsString('CIVIC_COMPATIBLE', $wrongProvince['diagnostica']);
+    }
+
     #[RunInSeparateProcess]
     public function testUsesProjectPathsIndependentlyOfCurrentWorkingDirectory(): void
     {

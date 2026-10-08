@@ -14,7 +14,7 @@ use Normalizzatore\Csv\CsvWriter;
 use Normalizzatore\Csv\NormalizeArguments;
 
 if (($argv[1] ?? null) !== 'normalize') {
-    fwrite(STDERR, "Usage: bin/normalizzatore normalize input.csv output.csv [--delimiter=\";\"] [--fuzzy]\nFuzzy: abbreviazioni e typo supportati, solo dopo un lookup deterministico della via senza risultati.\nSummary: ricerche = chiamate provider; match/ambigui = esiti nominali; risolti = match nominali confermati dal resolver CAP.\n");
+    fwrite(STDERR, "Usage: bin/normalizzatore normalize input.csv output.csv [--delimiter=\";\"] [--fuzzy] [--frazioni]\nFuzzy: abbreviazioni e typo supportati, solo dopo un lookup deterministico della via senza risultati.\nFrazioni: interpreta esattamente il campo città come frazione e risolve il comune amministrativo; le omonimie restano ambigue.\n");
     exit(2);
 }
 
@@ -31,7 +31,7 @@ try {
     CsvHeaderMap::fromHeader($inputCsv->header, AddressProcessingResultSerializer::OUTPUT_COLUMNS);
     $processor = AddressProcessorFactory::create($root);
     $pipeline = new CsvNormalizationPipeline(new CsvReader(), new CsvWriter(), $processor, new AddressProcessingResultSerializer());
-    $summary = $pipeline->run($options->inputPath, $options->outputPath, $options->delimiter, $options->fuzzy);
+    $summary = $pipeline->run($options->inputPath, $options->outputPath, $options->delimiter, $options->fuzzy, $options->frazioni);
     fwrite(STDOUT, $summary->toText());
 } catch (Throwable $exception) {
     fwrite(STDERR, 'Errore: ' . $exception->getMessage() . "\n");

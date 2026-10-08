@@ -19,6 +19,8 @@ use Normalizzatore\Csv\AddressProcessingResultSerializer;
  * @param bool $fuzzy Enables conservative street-name abbreviation/one-token typo matching
  *                     for STREET_BASED addresses only. Exact directory evidence always wins;
  *                     fuzzy matching can abstain and never uses the source CAP to select a street.
+ * @param bool $frazioni Enables exact/canonical frazione-to-comune resolution. It is independent
+ *                       from $fuzzy; the optional catalog is loaded lazily only when consulted.
  *
  * @return array{
  *     via_normalizzata: string,
@@ -47,6 +49,7 @@ function normalizza(
     string $citta,
     string $provincia,
     bool $fuzzy = false,
+    bool $frazioni = false,
 ): array {
     static $processor = null;
     static $serializer = null;
@@ -56,7 +59,7 @@ function normalizza(
         $serializer = new AddressProcessingResultSerializer();
     }
 
-    $values = $serializer->serialize($processor->process(new AddressInput($address, $cap, $citta, $provincia), $fuzzy));
+    $values = $serializer->serialize($processor->process(new AddressInput($address, $cap, $citta, $provincia), $fuzzy, $frazioni));
     $result = array_combine(AddressProcessingResultSerializer::OUTPUT_COLUMNS, $values);
     if ($result === false) {
         throw new LogicException('Impossibile associare i valori normalizzati alle colonne pubbliche.');
